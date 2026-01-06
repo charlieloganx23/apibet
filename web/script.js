@@ -1,12 +1,20 @@
+// ============================================================================
+// Configuração da API
+// ============================================================================
+const API_URL = 'http://localhost:8000';
+const USE_API = true; // Se false, usa JSON estático
+
 // Estado global
 let allMatches = [];
 let filteredMatches = [];
 let stats = {};
+let scraperStatus = { is_running: false };
 
 // Inicialização
 document.addEventListener('DOMContentLoaded', () => {
     initializeEventListeners();
     loadData();
+    updateScraperStatus();
 });
 
 // Event Listeners
@@ -15,6 +23,10 @@ function initializeEventListeners() {
     document.getElementById('btnAnalyze').addEventListener('click', showAnalysis);
     document.getElementById('btnApplyFilter').addEventListener('click', applyFilters);
     document.getElementById('btnExport').addEventListener('click', exportToCSV);
+    
+    // Controle do scraper (Fase 2)
+    document.getElementById('btnStartScraper').addEventListener('click', startScraper);
+    document.getElementById('btnStopScraper').addEventListener('click', stopScraper);
 }
 
 // Carregar dados do banco
@@ -23,28 +35,53 @@ async function loadData() {
     updateStatus('Carregando dados...');
     
     try {
-        // Simular chamada ao backend (será implementado na Fase 2)
-        // Por enquanto, vamos usar um script Python intermediário
-        const response = await fetch('/data/matches.json');
-        
-        if (!response.ok) {
-            // Se não encontrar JSON, executar script Python
-            await executePythonScript();
-            return;
+        if (USE_API) {
+            // Usar API REST
+            const response = await fetch(`${API_URL}/api/matches?limit=200`);
+            
+            if (!response.ok) {
+                throw new Error(`Erro HTTP: ${response.status}`);
+            }
+            
+            allMatches = await response.json();
+            
+            // Buscar estatísticas
+            const statsResponse = await fetch(`${API_URL}/api/stats`);
+            if (statsResponse.ok) {
+                stats = await statsResponse.json();
+            }
+        } else {
+            // Fallback: usar JSON estático
+            const response = await fetch('data/matches.json');
+            
+            if (!response.ok) {
+                throw new Error('JSON não encontrado');
+            }
+            
+            const data = await response.json();
+            allMatches = data.matches;
+            stats = data.stats;
         }
         
-        const data = await response.json();
-        allMatches = data.matches;
-        stats = data.stats;
-        
         updateDashboard();
-        updateStatus('✅ Dados carregados', 'success');
+        updateStatus('✅ Dados carregados via ' + (USE_API ? 'API' : 'JSON'), 'success');
     } catch (error) {
         console.error('Erro ao carregar dados:', error);
-        updateStatus('❌ Erro ao carregar dados', 'error');
+        updateStatus(`❌ Erro: ${error.message}`, 'error');
         
-        // Fallback: tentar executar script Python
-        await executePythonScript();
+        // Fallback: tentar JSON se API falhou
+        if (USE_API) {
+            try {
+                const response = await fetch('data/matches.json');
+                const data = await response.json();
+                allMatches = data.matches;
+                stats = data.stats;
+                updateDashboard();
+                updateStatus('⚠️ Usando dados em cache (API offline)', 'warning');
+            } catch (fallbackError) {
+                updateStatus('❌ API offline e sem cache', 'error');
+            }
+        }
     } finally {
         showLoading(false);
     }
@@ -205,13 +242,45 @@ async function predictMatch(hour, minute) {
     document.getElementById('predictionsSection').style.display = 'block';
     document.getElementById('predictionsSection').scrollIntoView({ behavior: 'smooth' });
     
-    const match = allMatches.find(m => m.hour === hour && m.minute === minute);
-    
-    if (!match) {
-        alert('Partida não encontrada!');
+    try {
+        if (USE_API) {
+            // Usar API para predição
+            const response = await fetch(`${API_URL}/api/predict`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ hour, minute })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Erro HTTP: ${response.status}`);
+            }
+            
+            const prediction = await response.json();
+            displayPrediction(prediction);
+        } else {
+            // Cálculo local (fallback)
+            const match = allMatches.find(m => m.hour === hour && m.minute === minute);
+            
+            if (!match) {
+                alert('Partida não encontrada!');
+                return;
+            }
+            
+            const prediction = calculateLocalPrediction(match);
+            displayPrediction(prediction);
+        }
+    } catch (error) {
+        console.error('Erro ao fazer predição:', error);
+        updateStatus(`❌ Erro na predição: ${error.message}`, 'error');
+    } finally {
         showLoading(false);
-        return;
     }
+}
+
+// Cálculo local de predição (fallback)
+function calculateLocalPrediction(match) {
     
     // Calcular probabilidades implícitas
     const probHome = (1 / match.odd_home) * 100;
@@ -429,7 +498,196 @@ function updateStatus(message, type = 'info') {
         statusEl.style.color = '#10b981';
     } else if (type === 'error') {
         statusEl.style.color = '#ef4444';
+    } else if (type === 'warning') {
+        statusEl.style.color = '#f59e0b';
     } else {
         statusEl.style.color = '#6b7280';
     }
 }
+
+// ============================================================================
+// Fase 2: Controle do Scraper via API
+// ============================================================================
+
+async function startScraper() {
+    if (!USE_API) {
+        alert('Ative o modo API para controlar o scraper');
+        return;
+    }
+    
+    showLoading(true);
+    updateStatus('Iniciando scraper...');
+    
+    try {
+        const response = await fetch(`${API_URL}/api/scraper/start`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.status === 'started') {
+            updateStatus(`✅ Scraper iniciado (PID: ${result.pid})`, 'success');
+            scraperStatus.is_running = true;
+            updateScraperButtons();
+        } else if (result.status === 'already_running') {
+            updateStatus(`⚠️ ${result.message}`, 'warning');
+        }
+    } catch (error) {
+        console.error('Erro ao iniciar scraper:', error);
+        updateStatus(`❌ Erro: ${error.message}`, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function stopScraper() {
+    if (!USE_API) {
+        alert('Ative o modo API para controlar o scraper');
+        return;
+    }
+    
+    showLoading(true);
+    updateStatus('Parando scraper...');
+    
+    try {
+        const response = await fetch(`${API_URL}/api/scraper/stop`, {
+            method: 'POST'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.status === 'stopped' || result.status === 'forced_stop') {
+            updateStatus(`✅ ${result.message}`, 'success');
+            scraperStatus.is_running = false;
+            updateScraperButtons();
+        } else if (result.status === 'not_running') {
+            updateStatus(`⚠️ ${result.message}`, 'warning');
+        }
+    } catch (error) {
+        console.error('Erro ao parar scraper:', error);
+        updateStatus(`❌ Erro: ${error.message}`, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+async function updateScraperStatus() {
+    if (!USE_API) return;
+    
+    try {
+        const response = await fetch(`${API_URL}/api/scraper/status`);
+        
+        if (!response.ok) return;
+        
+        const status = await response.json();
+        scraperStatus = status;
+        updateScraperButtons();
+        
+        // Se estiver rodando, mostrar PID
+        if (status.is_running && status.pid) {
+            const statusEl = document.querySelector('.status-value');
+            if (statusEl && statusEl.textContent.includes('Sistema operacional')) {
+                statusEl.textContent = `🤖 Scraper ativo (PID: ${status.pid})`;
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao verificar status do scraper:', error);
+    }
+}
+
+function updateScraperButtons() {
+    const btnStart = document.getElementById('btnStartScraper');
+    const btnStop = document.getElementById('btnStopScraper');
+    
+    if (btnStart && btnStop) {
+        if (scraperStatus.is_running) {
+            btnStart.disabled = true;
+            btnStart.style.opacity = '0.5';
+            btnStop.disabled = false;
+            btnStop.style.opacity = '1';
+        } else {
+            btnStart.disabled = false;
+            btnStart.style.opacity = '1';
+            btnStop.disabled = true;
+            btnStop.style.opacity = '0.5';
+        }
+    }
+}
+
+// Exibir predição (suporta resposta da API ou cálculo local)
+function displayPrediction(prediction) {
+    const content = document.getElementById('predictionContent');
+    
+    content.innerHTML = `
+        <div class="prediction-header">
+            <div class="prediction-match">
+                ${prediction.match.team_home} vs ${prediction.match.team_away}
+            </div>
+            <div style="color: #6b7280; margin-top: 10px;">
+                🏆 Liga: ${prediction.match.league.toUpperCase()} | ⏰ ${prediction.match.hour}:${prediction.match.minute}
+            </div>
+        </div>
+        
+        <h3 style="margin-bottom: 15px;">📊 Odds do Mercado</h3>
+        <div class="prediction-odds">
+            <div class="odd-card">
+                <div class="odd-label">🏠 Casa</div>
+                <div class="odd-value-large">${prediction.odds.home.odd.toFixed(2)}</div>
+                <div class="odd-label">${prediction.odds.home.probability.toFixed(1)}%</div>
+            </div>
+            <div class="odd-card">
+                <div class="odd-label">🤝 Empate</div>
+                <div class="odd-value-large">${prediction.odds.draw.odd.toFixed(2)}</div>
+                <div class="odd-label">${prediction.odds.draw.probability.toFixed(1)}%</div>
+            </div>
+            <div class="odd-card">
+                <div class="odd-label">✈️ Fora</div>
+                <div class="odd-value-large">${prediction.odds.away.odd.toFixed(2)}</div>
+                <div class="odd-label">${prediction.odds.away.probability.toFixed(1)}%</div>
+            </div>
+        </div>
+        
+        <h3 style="margin: 20px 0 15px 0;">🔮 Predição do Sistema</h3>
+        <div class="prediction-result ${prediction.prediction.is_favorite_strong ? 'favorite-strong' : 'favorite-weak'}">
+            <div style="font-size: 24px; font-weight: 700; margin-bottom: 5px;">
+                ${prediction.prediction.result}
+            </div>
+            <div style="font-size: 18px; color: #6b7280;">
+                Confiança: ${prediction.prediction.confidence.toFixed(1)}%
+            </div>
+            <div style="margin-top: 15px; font-size: 14px;">
+                ${prediction.prediction.is_favorite_strong ? '✅ Favorito Forte' : '⚠️ Jogo Equilibrado'}
+            </div>
+        </div>
+        
+        <div class="prediction-extra">
+            <div class="extra-item">
+                <strong>⚽ Gols:</strong> ${prediction.prediction.goals} (${prediction.prediction.goals_confidence.toFixed(1)}% confiança)
+            </div>
+            <div class="extra-item">
+                <strong>🎯 Ambas marcam:</strong> ${prediction.prediction.both_score} (${prediction.prediction.both_score_confidence.toFixed(1)}% confiança)
+            </div>
+        </div>
+        
+        <h3 style="margin: 20px 0 15px 0;">💡 Recomendações</h3>
+        <div class="recommendations">
+            ${prediction.recommendations.map(rec => `
+                <div class="recommendation-item ${rec.type}">
+                    ${rec.text}
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+// Atualizar status do scraper a cada 30 segundos
+if (USE_API) {
+    setInterval(updateScraperStatus, 30000);
