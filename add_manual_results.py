@@ -50,7 +50,7 @@ with get_db() as db:
     
     # Adicionar resultados aleatórios realistas
     updated = 0
-    for item in matches_to_update[:8]:  # Atualizar até 8 partidas
+    for item in matches_to_update[:15]:  # Atualizar até 15 partidas
         m = item['match']
         
         # Gerar placar realista (0-4 gols, mais comum 1-2 gols)
