@@ -62,6 +62,8 @@ function initializeEventListeners() {
 
 function connectWebSocket() {
     console.log('🔌 Tentando conectar WebSocket em:', WS_URL);
+    console.log('📍 Location:', window.location.href);
+    console.log('🌐 Protocol:', window.location.protocol);
     
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         console.log('✅ WebSocket já está conectado');
@@ -70,48 +72,68 @@ function connectWebSocket() {
     
     try {
         console.log('🔄 Criando nova conexão WebSocket...');
+        console.log('📊 WebSocket.CONNECTING:', WebSocket.CONNECTING);
+        console.log('📊 WebSocket.OPEN:', WebSocket.OPEN);
+        console.log('📊 WebSocket.CLOSING:', WebSocket.CLOSING);
+        console.log('📊 WebSocket.CLOSED:', WebSocket.CLOSED);
+        
         websocket = new WebSocket(WS_URL);
+        console.log('✅ Objeto WebSocket criado, readyState:', websocket.readyState);
         
         websocket.onopen = () => {
-            console.log('✅ WebSocket conectado');
+            console.log('✅ WebSocket conectado! readyState:', websocket.readyState);
             wsReconnectAttempts = 0;
             updateWSStatus('🟢 Conectado', 'success');
             showToast('Conectado ao servidor em tempo real', 'success');
         };
         
         websocket.onmessage = (event) => {
+            console.log('📨 Mensagem WebSocket recebida:', event.data);
             const data = JSON.parse(event.data);
             handleWebSocketMessage(data);
         };
         
         websocket.onerror = (error) => {
             console.error('❌ Erro no WebSocket:', error);
+            console.error('❌ WebSocket readyState:', websocket.readyState);
+            console.error('❌ Error object:', error);
             updateWSStatus('🔴 Erro', 'error');
         };
         
-        websocket.onclose = () => {
+        websocket.onclose = (event) => {
             console.log('⚠️ WebSocket desconectado');
+            console.log('📊 Close event:', {
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean
+            });
             updateWSStatus('🟡 Desconectado', 'warning');
             
             // Tentar reconectar
             if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
                 wsReconnectAttempts++;
+                const delay = 3000 * wsReconnectAttempts;
+                console.log(`🔄 Agendando reconexão em ${delay}ms (${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`);
                 setTimeout(() => {
                     console.log(`🔄 Tentando reconectar (${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`);
                     connectWebSocket();
-                }, 3000 * wsReconnectAttempts); // Backoff exponencial
+                }, delay); // Backoff exponencial
+            } else {
+                console.log('❌ Máximo de tentativas de reconexão atingido');
             }
         };
         
         // Ping a cada 25s para manter conexão
         setInterval(() => {
             if (websocket && websocket.readyState === WebSocket.OPEN) {
+                console.log('🏓 Enviando ping...');
                 websocket.send('ping');
             }
         }, 25000);
         
     } catch (error) {
-        console.error('Erro ao conectar WebSocket:', error);
+        console.error('❌ Erro ao conectar WebSocket:', error);
+        console.error('❌ Stack:', error.stack);
         updateWSStatus('🔴 Falha', 'error');
     }
 }
@@ -131,6 +153,34 @@ function handleWebSocketMessage(data) {
             
             // Atualizar dados automaticamente
             loadData();
+            break;
+        
+        case 'results_updated':
+            console.log(`✅ ${data.count} resultado(s) atualizado(s)!`);
+            showToast(
+                `✅ ${data.count} resultado${data.count > 1 ? 's' : ''} atualizado${data.count > 1 ? 's' : ''}!`,
+                'success'
+            );
+            
+            // Recarregar dados e estatísticas
+            loadData();
+            if (document.getElementById('analyticsSection').style.display !== 'none') {
+                loadPredictionStats();
+            }
+            break;
+        
+        case 'result_updated':
+            console.log(`🎯 Resultado atualizado: ${data.match} - ${data.score}`);
+            showToast(
+                `🎯 ${data.match}: ${data.score}`,
+                'info'
+            );
+            
+            // Recarregar dados e estatísticas
+            loadData();
+            if (document.getElementById('analyticsSection').style.display !== 'none') {
+                loadPredictionStats();
+            }
             break;
         
         case 'pong':
@@ -290,7 +340,7 @@ async function loadData() {
     try {
         if (USE_API) {
             // Usar API REST
-            const response = await fetch(`${API_URL}/api/matches?limit=200`);
+            const response = await fetch(`${API_URL}/api/matches?limit=500`);
             
             if (!response.ok) {
                 throw new Error(`Erro HTTP: ${response.status}`);
@@ -379,6 +429,8 @@ function updateDashboard() {
     document.getElementById('totalMatches').textContent = stats.total || 0;
     document.getElementById('finishedMatches').textContent = stats.finished || 0;
     document.getElementById('scheduledMatches').textContent = stats.scheduled || 0;
+    document.getElementById('accuracyValue').textContent = 
+        stats.accuracy ? `${stats.accuracy}%` : '-';
     
     // Atualizar última atualização
     const now = new Date();
@@ -418,15 +470,28 @@ function applyFilters() {
     const statusFilter = document.getElementById('filterStatus').value;
     const searchTerm = document.getElementById('searchTeam').value.toLowerCase();
     
+    console.log('🔍 Aplicando filtros:', { leagueFilter, statusFilter, searchTerm });
+    console.log('📊 Total de partidas antes do filtro:', allMatches.length);
+    
     filteredMatches = allMatches.filter(match => {
         // Filtro de liga
         if (leagueFilter !== 'all' && match.league !== leagueFilter) {
             return false;
         }
         
-        // Filtro de status
-        if (statusFilter !== 'all' && match.status !== statusFilter) {
-            return false;
+        // Filtro de status (melhorado)
+        if (statusFilter !== 'all') {
+            if (statusFilter === 'finished') {
+                // Finalizadas = tem resultado confirmado
+                if (match.status !== 'finished') {
+                    return false;
+                }
+            } else if (statusFilter === 'scheduled') {
+                // Agendadas = scheduled, live ou expired (sem resultado)
+                if (match.status === 'finished') {
+                    return false;
+                }
+            }
         }
         
         // Busca por time
@@ -439,6 +504,11 @@ function applyFilters() {
         return true;
     });
     
+    console.log('✅ Partidas após filtro:', filteredMatches.length);
+    if (filteredMatches.length > 0) {
+        console.log('📋 Exemplo de partida filtrada:', filteredMatches[0]);
+    }
+    
     updateTable();
 }
 
@@ -450,7 +520,7 @@ function updateTable() {
     count.textContent = `Mostrando ${filteredMatches.length} partidas`;
     
     if (filteredMatches.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="loading">Nenhuma partida encontrada</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="loading">Nenhuma partida encontrada</td></tr>';
         return;
     }
     
@@ -477,6 +547,9 @@ function updateTable() {
                         🔮 Prever
                     </button>
                 </td>
+                <td class="validation-cell">
+                    ${generateValidationBadges(match)}
+                </td>
             </tr>
         `)
         .join('');
@@ -487,6 +560,85 @@ function getOddClass(odd) {
     if (odd < 2.0) return 'odd-low';
     if (odd < 3.0) return 'odd-medium';
     return 'odd-high';
+}
+
+// Gerar badges de validação de predições
+function generateValidationBadges(match) {
+    // Status baseado em horário e resultado
+    if (match.status === 'expired' && !match.result) {
+        return '<span class="validation-badge expired">⏰ Aguardando Resultado</span>';
+    }
+    
+    if (match.status === 'live') {
+        return '<span class="validation-badge live">🔴 Ao Vivo / Em Breve</span>';
+    }
+    
+    // Se não finalizado, mostra pendente
+    if (match.status !== 'finished' || !match.result) {
+        return '<span class="validation-badge pending">⚪ Agendado</span>';
+    }
+    
+    // Calcular predições
+    const odds = [match.odd_home, match.odd_draw, match.odd_away];
+    const minOdd = Math.min(...odds);
+    let predictedWinner = 'home';
+    if (minOdd === match.odd_draw) predictedWinner = 'draw';
+    else if (minOdd === match.odd_away) predictedWinner = 'away';
+    
+    const winnerLabel = { home: 'Casa', draw: 'Empate', away: 'Fora' };
+    const actualLabel = { home: 'Casa', draw: 'Empate', away: 'Fora' };
+    
+    // Validar vencedor
+    const winnerCorrect = predictedWinner === match.result;
+    const winnerBadge = winnerCorrect 
+        ? `<span class="validation-badge correct" title="Predição: ${winnerLabel[predictedWinner]}">✅ ${winnerLabel[predictedWinner]}</span>`
+        : `<span class="validation-badge wrong" title="Predição: ${winnerLabel[predictedWinner]} | Real: ${actualLabel[match.result]}">❌ ${winnerLabel[predictedWinner]} → ${actualLabel[match.result]}</span>`;
+    
+    // Validar Under/Over 2.5
+    let overUnderBadge = '';
+    if (match.odd_under_25 && match.odd_over_25 && match.total_goals !== null) {
+        const predictedOver = match.odd_over_25 < match.odd_under_25;
+        const actualOver = match.total_goals > 2.5;
+        const overUnderCorrect = predictedOver === actualOver;
+        
+        const predLabel = predictedOver ? 'Over 2.5' : 'Under 2.5';
+        const actualLabel = actualOver ? 'Over 2.5' : 'Under 2.5';
+        
+        overUnderBadge = overUnderCorrect
+            ? `<span class="validation-badge correct">✅ ${predLabel}</span>`
+            : `<span class="validation-badge wrong" title="Real: ${actualLabel}">❌ ${predLabel}</span>`;
+    }
+    
+    // Validar Ambas Marcam
+    let bothScoreBadge = '';
+    if (match.odd_both_score_yes && match.odd_both_score_no && match.goals_home !== null && match.goals_away !== null) {
+        const predictedBothScore = match.odd_both_score_yes < match.odd_both_score_no;
+        const actualBothScore = match.goals_home > 0 && match.goals_away > 0;
+        const bothScoreCorrect = predictedBothScore === actualBothScore;
+        
+        const predLabel = predictedBothScore ? 'Ambas Sim' : 'Ambas Não';
+        const actualLabel = actualBothScore ? 'Ambas Sim' : 'Ambas Não';
+        
+        bothScoreBadge = bothScoreCorrect
+            ? `<span class="validation-badge correct">✅ ${predLabel}</span>`
+            : `<span class="validation-badge wrong" title="Real: ${actualLabel}">❌ ${predLabel}</span>`;
+    }
+    
+    // Mostrar placar
+    const scoreDisplay = (match.goals_home !== null && match.goals_away !== null)
+        ? `<div class="match-score">${match.goals_home} x ${match.goals_away}</div>`
+        : '';
+    
+    return `
+        <div class="validation-content">
+            ${scoreDisplay}
+            <div class="validation-badges">
+                ${winnerBadge}
+                ${overUnderBadge}
+                ${bothScoreBadge}
+            </div>
+        </div>
+    `;
 }
 
 // Predição de partida
@@ -985,9 +1137,59 @@ async function loadAnalytics() {
             // Cria gráfico de odds médias
             createOddsChart(analytics.avg_odds);
         }
+
+        // Carrega estatísticas de validação
+        await loadPredictionStats();
     } catch (error) {
         console.error('Erro ao carregar analytics:', error);
         showToast('Erro ao carregar analytics', 'error');
+    }
+}
+
+// Nova função para carregar estatísticas de validação de predições
+async function loadPredictionStats() {
+    try {
+        const response = await fetch(`${API_URL}/api/predictions/stats`);
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            const stats = data.stats;
+            
+            // Atualiza badge de status
+            const badge = document.getElementById('validationBadge');
+            if (data.scheduler_running) {
+                badge.textContent = '🟢 Ativo';
+                badge.style.background = 'rgba(34, 197, 94, 0.3)';
+            } else {
+                badge.textContent = '🔴 Inativo';
+                badge.style.background = 'rgba(239, 68, 68, 0.3)';
+            }
+            
+            // Atualiza contadores
+            document.getElementById('totalPredictions').textContent = stats.total_predictions || 0;
+            document.getElementById('correctWinners').textContent = stats.correct_winners || 0;
+            document.getElementById('correctScores').textContent = stats.correct_scores || 0;
+            document.getElementById('correctOverUnder').textContent = stats.correct_over_under || 0;
+            
+            // Calcula e atualiza porcentagens
+            const total = stats.total_predictions || 1; // Evita divisão por zero
+            const accuracyWinner = Math.round((stats.correct_winners / total) * 100) || 0;
+            const accuracyOverUnder = Math.round((stats.correct_over_under / total) * 100) || 0;
+            
+            // Atualiza textos de acurácia
+            document.getElementById('accuracyWinner').textContent = `${accuracyWinner}%`;
+            document.getElementById('accuracyOverUnder').textContent = `${accuracyOverUnder}%`;
+            
+            // Atualiza barras de progresso
+            document.getElementById('progressWinner').style.width = `${accuracyWinner}%`;
+            document.getElementById('progressOverUnder').style.width = `${accuracyOverUnder}%`;
+            
+            console.log('✅ Estatísticas de validação atualizadas:', stats);
+        } else {
+            console.warn('⚠️ Erro ao carregar estatísticas:', data.error);
+        }
+    } catch (error) {
+        console.error('❌ Erro ao carregar estatísticas de predições:', error);
     }
 }
 
@@ -1183,3 +1385,12 @@ async function exportCSV() {
 // Atualizar status do scraper a cada 30 segundos
 if (USE_API) {
     setInterval(updateScraperStatus, 30000);
+    
+    // Atualizar estatísticas de validação a cada 60 segundos
+    setInterval(() => {
+        if (document.getElementById('analyticsSection').style.display !== 'none') {
+            loadPredictionStats();
+        }
+    }, 60000);
+}
+

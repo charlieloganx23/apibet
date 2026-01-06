@@ -81,7 +81,7 @@
             <div class="stat-card">
                 <div class="stat-icon">🎯</div>
                 <div class="stat-content">
-                    <div class="stat-value" id="accuracy">58.3%</div>
+                    <div class="stat-value" id="accuracyValue">-</div>
                     <div class="stat-label">Acurácia Atual</div>
                 </div>
             </div>
@@ -152,11 +152,12 @@
                             <th>Under 2.5</th>
                             <th>Over 2.5</th>
                             <th>Ações</th>
+                            <th>📊 Resultado & Validação</th>
                         </tr>
                     </thead>
                     <tbody id="matchesTableBody">
                         <tr>
-                            <td colspan="9" class="loading">Carregando dados...</td>
+                            <td colspan="10" class="loading">Carregando dados...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -230,6 +231,60 @@
                         <div class="kpi-label">Finalizadas</div>
                         <div class="kpi-value" id="kpiFinished">-</div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Validation Stats Section -->
+            <div class="validation-section">
+                <h3 class="validation-header">
+                    <span>🎯</span> 
+                    <span>Validação de Predições em Tempo Real</span>
+                    <span id="validationBadge" class="validation-badge">Aguardando...</span>
+                </h3>
+                
+                <div class="validation-grid">
+                    <div class="validation-card">
+                        <div class="validation-label">Total de Predições</div>
+                        <div id="totalPredictions" class="validation-value">0</div>
+                    </div>
+                    <div class="validation-card">
+                        <div class="validation-label">Acertos Vencedor</div>
+                        <div id="correctWinners" class="validation-value">0</div>
+                    </div>
+                    <div class="validation-card">
+                        <div class="validation-label">Acertos Placar</div>
+                        <div id="correctScores" class="validation-value">0</div>
+                    </div>
+                    <div class="validation-card">
+                        <div class="validation-label">Acertos Over/Under</div>
+                        <div id="correctOverUnder" class="validation-value">0</div>
+                    </div>
+                </div>
+
+                <div class="validation-accuracy">
+                    <div class="accuracy-item">
+                        <div class="accuracy-header">
+                            <span>Acurácia Vencedor</span>
+                            <span id="accuracyWinner" class="accuracy-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="progressWinner" class="progress-fill progress-green"></div>
+                        </div>
+                    </div>
+                    <div class="accuracy-item">
+                        <div class="accuracy-header">
+                            <span>Acurácia Over/Under 2.5</span>
+                            <span id="accuracyOverUnder" class="accuracy-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="progressOverUnder" class="progress-fill progress-blue"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="validation-info">
+                    <span>ℹ️</span>
+                    <span>Sistema de validação automática rodando a cada 3 minutos. Atualizado em tempo real via WebSocket.</span>
                 </div>
             </div>
 

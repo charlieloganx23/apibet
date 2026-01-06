@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste WebSocket</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .status {
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 18px;
+        }
+        .connected { background: #10b981; }
+        .disconnected { background: #ef4444; }
+        .connecting { background: #f59e0b; }
+        .log {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid #3b82f6;
+            padding-left: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px;
+            background: #3b82f6;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #2563eb;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 Teste de WebSocket</h1>
+    
+    <div id="status" class="status connecting">
+        🟡 Status: Conectando...
+    </div>
+    
+    <div>
+        <button onclick="connectWS()">🔄 Reconectar</button>
+        <button onclick="sendPing()">🏓 Enviar Ping</button>
+        <button onclick="clearLog()">🗑️ Limpar Log</button>
+    </div>
+    
+    <h2>📋 Log de Eventos</h2>
+    <div id="log" class="log"></div>
+    
+    <script>
+        const WS_URL = 'ws://localhost:8000/ws';
+        let ws = null;
+        
+        function addLog(message, type = 'info') {
+            const log = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+            console.log(message);
+        }
+        
+        function updateStatus(text, statusClass) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = text;
+            statusEl.className = `status ${statusClass}`;
+        }
+        
+        function connectWS() {
+            addLog(`🔌 Tentando conectar ao WebSocket: ${WS_URL}`);
+            updateStatus('🟡 Status: Conectando...', 'connecting');
+            
+            try {
+                ws = new WebSocket(WS_URL);
+                
+                ws.onopen = (event) => {
+                    addLog('✅ WebSocket conectado com sucesso!');
+                    updateStatus('🟢 Status: Conectado', 'connected');
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    addLog(`📨 Mensagem recebida: ${JSON.stringify(data, null, 2)}`);
+                };
+                
+                ws.onerror = (error) => {
+                    addLog(`❌ Erro no WebSocket: ${error}`);
+                    updateStatus('🔴 Status: Erro', 'disconnected');
+                };
+                
+                ws.onclose = (event) => {
+                    addLog(`⚠️ WebSocket desconectado (code: ${event.code}, reason: ${event.reason})`);
+                    updateStatus('🔴 Status: Desconectado', 'disconnected');
+                };
+                
+            } catch (error) {
+                addLog(`❌ Erro ao criar WebSocket: ${error}`);
+                updateStatus('🔴 Status: Falha', 'disconnected');
+            }
+        }
+        
+        function sendPing() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                addLog('🏓 Enviando ping...');
+                ws.send('ping');
+            } else {
+                addLog('❌ WebSocket não está conectado!');
+            }
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            addLog('🗑️ Log limpo');
+        }
+        
+        // Conectar automaticamente ao carregar
+        window.onload = () => {
+            addLog('🚀 Página carregada');
+            addLog(`📍 URL: ${window.location.href}`);
+            addLog(`🔗 WebSocket: ${WS_URL}`);
+            connectWS();
+        };
+    </script>
+</body>
+</html>

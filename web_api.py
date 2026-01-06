@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 import subprocess
 import psutil
 import signal
@@ -17,11 +17,16 @@ import sys
 import os
 import asyncio
 import json
+import threading
+import time
 
 # Imports do projeto
 from database_rapidapi import get_db
 from models_rapidapi import Match, ScraperLog
 from sqlalchemy import func, desc
+from sqlalchemy.sql import case
+from scraper_rapidapi import run_rapidapi_scraper
+from results_collector import run_results_collector
 
 # Inicializar FastAPI
 app = FastAPI(
@@ -43,6 +48,14 @@ app.add_middleware(
 scraper_process = None
 active_websockets: Set[WebSocket] = set()
 last_match_count = 0
+scheduler_running = False
+scheduler_thread = None
+prediction_stats = {
+    'total_predictions': 0,
+    'correct_winners': 0,
+    'correct_scores': 0,
+    'correct_over_under': 0
+}
 
 # ============================================================================
 # Modelos Pydantic
@@ -66,11 +79,15 @@ class MatchResponse(BaseModel):
     status: str
     total_goals: Optional[int]
     result: Optional[str]
+    
+    class Config:
+        from_attributes = True  # Para Pydantic v2 (antes era orm_mode = True)
 
 class StatsResponse(BaseModel):
-    total_matches: int
-    finished_matches: int
-    scheduled_matches: int
+    total: int
+    finished: int
+    scheduled: int
+    accuracy: float
     leagues: dict
     last_execution: Optional[dict]
 
@@ -131,7 +148,66 @@ async def get_matches(
             
             matches = query.order_by(Match.hour, Match.minute).limit(limit).all()
             
-            return matches
+            # Adicionar campo 'status' dinamicamente considerando horário
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            current_time_minutes = now.hour * 60 + now.minute
+            
+            result = []
+            for match in matches:
+                try:
+                    # Determinar status real
+                    if match.result is not None:
+                        # Tem resultado confirmado
+                        match_status = "finished"
+                    elif match.match_date:
+                        # Usar match_date se disponível
+                        time_diff = now - match.match_date
+                        if time_diff > timedelta(hours=2):
+                            match_status = "expired"  # Passou do horário, sem resultado
+                        elif time_diff > timedelta(minutes=-30):
+                            match_status = "live"  # Próximo ou em andamento
+                        else:
+                            match_status = "scheduled"
+                    else:
+                        # Usar hora/minuto
+                        match_time_minutes = match.hour * 60 + match.minute
+                        time_diff_minutes = current_time_minutes - match_time_minutes
+                        
+                        if time_diff_minutes > 120:  # Passou 2h
+                            match_status = "expired"
+                        elif time_diff_minutes > -30:  # Começa em menos de 30min ou já começou
+                            match_status = "live"
+                        else:
+                            match_status = "scheduled"
+                    
+                    match_dict = {
+                        "id": match.id,
+                        "external_id": match.external_id,
+                        "league": match.league,
+                        "team_home": match.team_home,
+                        "team_away": match.team_away,
+                        "hour": match.hour,
+                        "minute": match.minute,
+                        "odd_home": float(match.odd_home) if match.odd_home else None,
+                        "odd_draw": float(match.odd_draw) if match.odd_draw else None,
+                        "odd_away": float(match.odd_away) if match.odd_away else None,
+                        "odd_over_25": float(match.odd_over_25) if match.odd_over_25 else None,
+                        "odd_under_25": float(match.odd_under_25) if match.odd_under_25 else None,
+                        "odd_both_score_yes": float(match.odd_both_score_yes) if match.odd_both_score_yes else None,
+                        "odd_both_score_no": float(match.odd_both_score_no) if match.odd_both_score_no else None,
+                        "status": match_status,
+                        "total_goals": float(match.total_goals) if match.total_goals is not None else None,
+                        "result": match.result,
+                        "goals_home": int(match.goals_home) if hasattr(match, 'goals_home') and match.goals_home is not None else None,
+                        "goals_away": int(match.goals_away) if hasattr(match, 'goals_away') and match.goals_away is not None else None
+                    }
+                    result.append(match_dict)
+                except Exception as e:
+                    print(f"⚠️ Erro ao processar partida {match.id}: {e}")
+                    continue
+            
+            return result
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar partidas: {str(e)}")
@@ -165,20 +241,22 @@ async def get_stats():
             # Total de partidas
             total = db.query(func.count(Match.id)).scalar()
             
-            # Finalizadas
+            # Finalizadas (status = 'finished')
             finished = db.query(func.count(Match.id)).filter(
-                Match.total_goals.isnot(None)
+                Match.status == 'finished'
             ).scalar()
             
             # Agendadas
-            scheduled = total - finished
+            scheduled = db.query(func.count(Match.id)).filter(
+                Match.status == 'scheduled'
+            ).scalar()
             
             # Por liga
             leagues_stats = {}
             leagues = db.query(
                 Match.league,
                 func.count(Match.id).label('count'),
-                func.count(Match.total_goals).label('finished_count')
+                func.sum(case((Match.status == 'finished', 1), else_=0)).label('finished_count')
             ).group_by(Match.league).all()
             
             for league, count, finished_count in leagues:
@@ -200,10 +278,14 @@ async def get_stats():
                     'matches_updated': last_log.matches_updated
                 }
             
+            # Acurácia (pega do prediction_stats global)
+            accuracy = prediction_stats.get('accuracy_winner', 0) if prediction_stats else 0
+            
             return {
-                'total_matches': total,
-                'finished_matches': finished,
-                'scheduled_matches': scheduled,
+                'total': total,
+                'finished': finished,
+                'scheduled': scheduled,
+                'accuracy': accuracy,
                 'leagues': leagues_stats,
                 'last_execution': last_execution
             }
@@ -421,22 +503,35 @@ async def get_scraper_status():
         is_running = scraper_process and scraper_process.poll() is None
         
         # Buscar última execução
-        with get_db() as db:
-            last_log = db.query(ScraperLog).order_by(desc(ScraperLog.id)).first()
+        last_execution = None
+        try:
+            with get_db() as db:
+                last_log = db.query(ScraperLog).order_by(desc(ScraperLog.id)).first()
+                
+                if last_log:
+                    last_execution = {
+                        'date': last_log.started_at.isoformat() if last_log.started_at else None,
+                        'status': last_log.status if hasattr(last_log, 'status') else 'unknown',
+                        'matches_found': last_log.matches_found if hasattr(last_log, 'matches_found') else 0,
+                        'matches_new': last_log.matches_new if hasattr(last_log, 'matches_new') else 0
+                    }
+        except Exception as db_error:
+            print(f"Erro ao buscar logs: {db_error}")
         
         return {
             'is_running': is_running,
             'pid': scraper_process.pid if is_running else None,
-            'last_execution': {
-                'date': last_log.started_at.isoformat() if last_log and last_log.started_at else None,
-                'status': last_log.status if last_log else None,
-                'matches_found': last_log.matches_found if last_log else 0,
-                'matches_new': last_log.matches_new if last_log else 0
-            } if last_log else None
+            'last_execution': last_execution
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao verificar status: {str(e)}")
+        print(f"Erro no endpoint scraper/status: {e}")
+        return {
+            'is_running': False,
+            'pid': None,
+            'last_execution': None,
+            'error': str(e)
+        }
 
 # ============================================================================
 # WebSocket para Tempo Real
@@ -499,6 +594,230 @@ async def broadcast_update(message: dict):
     # Remover conexões mortas
     for websocket in disconnected:
         active_websockets.remove(websocket)
+
+# ============================================================================
+# Scheduler Automático
+# ============================================================================
+
+def auto_update_scheduler():
+    """
+    Scheduler que roda em background:
+    - A cada 5 minutos: busca novas partidas
+    - A cada 3 minutos: atualiza resultados
+    """
+    global scheduler_running, last_match_count
+    
+    scraper_counter = 0
+    results_counter = 0
+    
+    print("🔄 Scheduler automático iniciado")
+    
+    while scheduler_running:
+        try:
+            scraper_counter += 1
+            results_counter += 1
+            
+            # A cada 5 minutos (300 segundos / 30 = 10 iterações)
+            if scraper_counter >= 10:
+                print("🔍 Executando scraper automático...")
+                try:
+                    result = run_rapidapi_scraper()
+                    if result['matches_new'] > 0:
+                        # Notificar via WebSocket
+                        asyncio.run(broadcast_update({
+                            'type': 'new_matches',
+                            'count': result['matches_new'],
+                            'message': f"{result['matches_new']} nova(s) partida(s) adicionada(s)!",
+                            'timestamp': datetime.now().isoformat()
+                        }))
+                        print(f"✅ {result['matches_new']} novas partidas")
+                except Exception as e:
+                    print(f"❌ Erro no scraper: {e}")
+                scraper_counter = 0
+            
+            # A cada 3 minutos (180 segundos / 30 = 6 iterações)
+            if results_counter >= 6:
+                print("📊 Atualizando resultados...")
+                try:
+                    result = run_results_collector()
+                    if result['updated'] > 0:
+                        # Notificar via WebSocket
+                        asyncio.run(broadcast_update({
+                            'type': 'results_updated',
+                            'count': result['updated'],
+                            'message': f"{result['updated']} resultado(s) atualizado(s)!",
+                            'timestamp': datetime.now().isoformat()
+                        }))
+                        print(f"✅ {result['updated']} resultados atualizados")
+                        
+                        # Validar predições
+                        validate_predictions()
+                except Exception as e:
+                    print(f"❌ Erro ao atualizar resultados: {e}")
+                results_counter = 0
+            
+            # Aguardar 30 segundos
+            time.sleep(30)
+            
+        except Exception as e:
+            print(f"❌ Erro no scheduler: {e}")
+            time.sleep(30)
+
+def validate_predictions():
+    """Valida predições contra resultados reais"""
+    global prediction_stats
+    
+    try:
+        with get_db() as db:
+            # Buscar partidas finalizadas com predição
+            finished_matches = db.query(Match).filter(
+                Match.result.isnot(None),
+                Match.status == 'finished'
+            ).all()
+            
+            if not finished_matches:
+                print("⚠️ Nenhuma partida finalizada para validar")
+                return
+            
+            stats = {
+                'total': 0,
+                'correct_winner': 0,
+                'correct_score': 0,
+                'correct_over_under': 0
+            }
+            
+            for match in finished_matches:
+                # Validar vencedor (baseado em odds - menor odd = favorito)
+                if all([match.odd_home, match.odd_draw, match.odd_away]):
+                    stats['total'] += 1
+                    
+                    odds = [
+                        (match.odd_home, 'home'),
+                        (match.odd_draw, 'draw'),
+                        (match.odd_away, 'away')
+                    ]
+                    
+                    predicted_winner = min(odds, key=lambda x: x[0])[1]
+                    
+                    if predicted_winner == match.result:
+                        stats['correct_winner'] += 1
+                    
+                    # Validar over/under 2.5
+                    if match.total_goals is not None and match.odd_over_25 and match.odd_under_25:
+                        predicted_over = match.odd_over_25 < match.odd_under_25
+                        actual_over = match.total_goals > 2.5
+                        if predicted_over == actual_over:
+                            stats['correct_over_under'] += 1
+            
+            prediction_stats = {
+                'total_predictions': stats['total'],
+                'correct_winners': stats['correct_winner'],
+                'correct_scores': 0,  # Implementar depois
+                'correct_over_under': stats['correct_over_under'],
+                'accuracy_winner': round((stats['correct_winner'] / stats['total'] * 100), 1) if stats['total'] > 0 else 0,
+                'accuracy_over_under': round((stats['correct_over_under'] / stats['total'] * 100), 1) if stats['total'] > 0 else 0
+            }
+            
+            print(f"📊 Validação: {stats['correct_winner']}/{stats['total']} vencedores corretos ({prediction_stats['accuracy_winner']}%)")
+            
+    except Exception as e:
+        print(f"❌ Erro ao validar predições: {e}")
+        import traceback
+        traceback.print_exc()
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicia scheduler automático quando API inicia"""
+    global scheduler_running, scheduler_thread
+    
+    # Executa validação inicial
+    print("🔄 Executando validação inicial de predições...")
+    validate_predictions()
+    
+    # Atualiza status dos jogos baseado no horário
+    print("⏰ Atualizando status dos jogos baseado no horário...")
+    update_match_status_by_time()
+    
+    scheduler_running = True
+    scheduler_thread = threading.Thread(target=auto_update_scheduler, daemon=True)
+    scheduler_thread.start()
+    print("✅ Sistema de auto-atualização iniciado!")
+
+
+def update_match_status_by_time():
+    """
+    Atualiza o status dos jogos baseado na data/hora atual.
+    Jogos com horário passado (mais de 2h atrás) e sem resultado são marcados como 'finished'
+    """
+    try:
+        with get_db() as db:
+            from datetime import datetime, timedelta
+            
+            # Pegar data/hora atual
+            now = datetime.now()
+            current_hour = now.hour
+            current_minute = now.minute
+            current_time_minutes = current_hour * 60 + current_minute
+            
+            # Buscar jogos agendados sem resultado
+            scheduled_matches = db.query(Match).filter(
+                Match.status == 'scheduled',
+                Match.result.is_(None)
+            ).all()
+            
+            updated_count = 0
+            for match in scheduled_matches:
+                # Calcular tempo do jogo em minutos
+                match_time_minutes = match.hour * 60 + match.minute
+                
+                # Se tem match_date, usar ela para comparação
+                if match.match_date:
+                    time_diff = now - match.match_date
+                    # Se passou mais de 2 horas (tempo suficiente para jogo + margem)
+                    if time_diff > timedelta(hours=2):
+                        # Marcar como agendado mas provavelmente encerrado
+                        # Não mudamos para 'finished' sem resultado confirmado
+                        # mas podemos adicionar um novo status 'expired'
+                        pass
+                else:
+                    # Sem match_date, usar apenas hora/minuto
+                    # Se passou mais de 2 horas do horário
+                    time_diff_minutes = current_time_minutes - match_time_minutes
+                    
+                    # Se é do dia anterior (horário menor que atual)
+                    if time_diff_minutes > 120:  # 2 horas = 120 minutos
+                        # Não alterar status sem resultado confirmado
+                        # Apenas logar para investigação
+                        if updated_count == 0:
+                            print(f"⚠️ Jogos com horário passado sem resultado:")
+                        print(f"   • {match.hour:02d}:{match.minute:02d} - {match.team_home} vs {match.team_away}")
+                        updated_count += 1
+            
+            if updated_count > 0:
+                print(f"⚠️ Total de {updated_count} jogos com horário passado sem resultado")
+                print(f"💡 Aguardando atualização de resultados via scraper")
+            else:
+                print("✅ Todos os jogos agendados estão dentro do prazo esperado")
+            
+            db.commit()
+            
+    except Exception as e:
+        print(f"❌ Erro ao atualizar status por horário: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    scheduler_running = True
+    scheduler_thread = threading.Thread(target=auto_update_scheduler, daemon=True)
+    scheduler_thread.start()
+    print("✅ Sistema de auto-atualização iniciado!")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Para scheduler quando API encerra"""
+    global scheduler_running
+    
+    scheduler_running = False
+    print("🛑 Sistema de auto-atualização encerrado!")
 
 # ============================================================================
 # Endpoints - Logs
@@ -667,97 +986,99 @@ async def get_analytics_overview():
     Retorna overview de analytics: taxa de acerto, distribuição por liga, etc.
     """
     try:
-        db = next(get_db())
-        
-        # Total de partidas
-        total_matches = db.query(Match).count()
-        
-        # Partidas com resultado
-        finished_matches = db.query(Match).filter(
-            Match.home_score.isnot(None)
-        ).count()
-        
-        # Taxa de acerto por tipo de predição
-        correct_predictions = {
-            'winner': 0,
-            'draw': 0,
-            'score': 0,
-            'total': 0
-        }
-        
-        matches_with_prediction = db.query(Match).filter(
-            Match.predicted_winner.isnot(None),
-            Match.home_score.isnot(None)
-        ).all()
-        
-        for match in matches_with_prediction:
-            correct_predictions['total'] += 1
+        with get_db() as db:
             
-            # Verifica predição de vencedor
-            actual_winner = 'draw'
-            if match.home_score > match.away_score:
-                actual_winner = 'home'
-            elif match.away_score > match.home_score:
-                actual_winner = 'away'
+            # Total de partidas
+            total_matches = db.query(Match).count()
             
-            if match.predicted_winner == actual_winner:
-                correct_predictions['winner'] += 1
+            # Partidas com resultado (status finished)
+            finished_matches = db.query(Match).filter(
+                Match.status == 'finished'
+            ).count()
             
-            if actual_winner == 'draw':
-                correct_predictions['draw'] += 1
-            
-            # Verifica placar exato
-            if (match.predicted_home_score == match.home_score and 
-                match.predicted_away_score == match.away_score):
-                correct_predictions['score'] += 1
-        
-        # Calcula taxas
-        winner_accuracy = (correct_predictions['winner'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
-        score_accuracy = (correct_predictions['score'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
-        
-        # Distribuição por liga
-        league_stats = db.query(
-            Match.league,
-            func.count(Match.id).label('count'),
-            func.sum(func.case((Match.home_score.isnot(None), 1), else_=0)).label('finished')
-        ).group_by(Match.league).all()
-        
-        leagues = [
-            {
-                'league': stat.league,
-                'total': stat.count,
-                'finished': stat.finished,
-                'pending': stat.count - stat.finished
+            # Taxa de acerto por tipo de predição
+            correct_predictions = {
+                'winner': 0,
+                'draw': 0,
+                'score': 0,
+                'total': 0
             }
-            for stat in league_stats
-        ]
-        
-        # Média de odds
-        avg_odds = db.query(
-            func.avg(Match.home_odds).label('home'),
-            func.avg(Match.draw_odds).label('draw'),
-            func.avg(Match.away_odds).label('away')
-        ).first()
-        
-        return {
-            'status': 'success',
-            'data': {
-                'total_matches': total_matches,
-                'finished_matches': finished_matches,
-                'pending_matches': total_matches - finished_matches,
-                'accuracy': {
-                    'winner': round(winner_accuracy, 2),
-                    'exact_score': round(score_accuracy, 2),
-                    'predictions_made': correct_predictions['total']
-                },
-                'leagues': leagues,
-                'avg_odds': {
-                    'home': round(float(avg_odds.home or 0), 2),
-                    'draw': round(float(avg_odds.draw or 0), 2),
-                    'away': round(float(avg_odds.away or 0), 2)
+            
+            matches_with_prediction = db.query(Match).filter(
+                Match.result.isnot(None),
+                Match.status == 'finished'
+            ).all()
+            
+            for match in matches_with_prediction:
+                correct_predictions['total'] += 1
+                
+                # Verifica predição de vencedor (baseado em odds)
+                odds = [match.odd_home, match.odd_draw, match.odd_away]
+                if min(odds) == match.odd_home:
+                    predicted_winner = 'home'
+                elif min(odds) == match.odd_away:
+                    predicted_winner = 'away'
+                else:
+                    predicted_winner = 'draw'
+                
+                if predicted_winner == match.result:
+                    correct_predictions['winner'] += 1
+                
+                if match.result == 'draw':
+                    correct_predictions['draw'] += 1
+                
+                # Verifica placar exato (se disponível)
+                if (match.goals_home is not None and match.goals_away is not None):
+                    # Placar exato não temos predição no modelo atual, conta como 0
+                    pass
+            
+            # Calcula taxas
+            winner_accuracy = (correct_predictions['winner'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
+            score_accuracy = (correct_predictions['score'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
+            
+            # Distribuição por liga
+            league_stats = db.query(
+                Match.league,
+                func.count(Match.id).label('count'),
+                func.sum(case((Match.status == 'finished', 1), else_=0)).label('finished')
+            ).group_by(Match.league).all()
+            
+            leagues = [
+                {
+                    'league': stat.league,
+                    'total': stat.count,
+                    'finished': stat.finished,
+                    'pending': stat.count - stat.finished
+                }
+                for stat in league_stats
+            ]
+            
+            # Média de odds
+            avg_odds = db.query(
+                func.avg(Match.odd_home).label('home'),
+                func.avg(Match.odd_draw).label('draw'),
+                func.avg(Match.odd_away).label('away')
+            ).first()
+            
+            return {
+                'status': 'success',
+                'data': {
+                    'total_matches': total_matches,
+                    'finished_matches': finished_matches,
+                    'pending_matches': total_matches - finished_matches,
+                    'accuracy': {
+                        'winner': round(winner_accuracy, 2),
+                        'exact_score': round(score_accuracy, 2),
+                        'predictions_made': correct_predictions['total']
+                    },
+                    'leagues': leagues,
+                    'avg_odds': {
+                        'home': round(float(avg_odds.home or 0), 2),
+                        'draw': round(float(avg_odds.draw or 0), 2),
+                        'away': round(float(avg_odds.away or 0), 2)
+                    }
                 }
             }
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -767,84 +1088,196 @@ async def get_timeline_data():
     Retorna dados para gráfico de timeline de partidas
     """
     try:
-        db = next(get_db())
-        
-        # Agrupa por data
-        timeline = db.query(
-            func.date(Match.match_date).label('date'),
-            func.count(Match.id).label('count')
-        ).group_by(
-            func.date(Match.match_date)
-        ).order_by('date').all()
-        
-        return {
-            'status': 'success',
-            'data': [
-                {
-                    'date': str(t.date),
-                    'count': t.count
-                }
-                for t in timeline
-            ]
-        }
+        with get_db() as db:
+            
+            # Agrupa por data
+            timeline = db.query(
+                func.date(Match.match_date).label('date'),
+                func.count(Match.id).label('count')
+            ).group_by(
+                func.date(Match.match_date)
+            ).order_by('date').all()
+            
+            return {
+                'status': 'success',
+                'data': [
+                    {
+                        'date': str(t.date),
+                        'count': t.count
+                    }
+                    for t in timeline
+                ]
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/recommendations")
-async def get_recommendations(min_confidence: float = 70.0):
+async def get_recommendations(min_confidence: float = 0.65):
     """
-    Retorna recomendações de apostas baseadas em confiança da predição
+    Retorna recomendações de apostas baseadas em value bets
+    Busca partidas onde as odds indicam valor (menor odd = favorito)
     """
     try:
-        db = next(get_db())
-        
-        # Busca partidas futuras com predições
-        upcoming = db.query(Match).filter(
-            Match.home_score.is_(None),
-            Match.predicted_winner.isnot(None),
-            Match.prediction_confidence >= min_confidence
-        ).order_by(
-            desc(Match.prediction_confidence),
-            Match.match_date
-        ).limit(20).all()
-        
-        recommendations = []
-        for match in upcoming:
-            # Calcula value bet (quando odds são maiores que a confiança sugere)
-            expected_prob = match.prediction_confidence / 100
+        with get_db() as db:
             
-            if match.predicted_winner == 'home':
-                implied_prob = 1 / match.home_odds if match.home_odds else 0
-                odds = match.home_odds
-            elif match.predicted_winner == 'away':
-                implied_prob = 1 / match.away_odds if match.away_odds else 0
-                odds = match.away_odds
-            else:
-                implied_prob = 1 / match.draw_odds if match.draw_odds else 0
-                odds = match.draw_odds
+            # Busca partidas futuras (status scheduled)
+            upcoming = db.query(Match).filter(
+                Match.status == 'scheduled'
+            ).order_by(
+                Match.match_date
+            ).limit(50).all()
             
-            value = (expected_prob - implied_prob) * 100 if implied_prob > 0 else 0
+            recommendations = []
+            for match in upcoming:
+                # Identifica o favorito baseado nas odds
+                odds_list = [
+                    ('home', match.odd_home),
+                    ('draw', match.odd_draw),
+                    ('away', match.odd_away)
+                ]
+                
+                # Remove odds None ou 0
+                valid_odds = [(name, odd) for name, odd in odds_list if odd and odd > 0]
+                
+                if not valid_odds:
+                    continue
+                
+                # Menor odd = favorito
+                predicted_winner, min_odd = min(valid_odds, key=lambda x: x[1])
+                
+                # Calcula probabilidade implícita
+                implied_prob = 1 / min_odd if min_odd > 0 else 0
+                confidence = implied_prob * 100
+                
+                # Só recomenda se confiança >= min_confidence
+                if confidence < min_confidence * 100:
+                    continue
+                
+                # Calcula value (diferença entre nossa confiança e a odd)
+                # Quanto maior a diferença, melhor o value bet
+                expected_odd = 1 / (confidence / 100) if confidence > 0 else 0
+                value = ((min_odd - expected_odd) / expected_odd * 100) if expected_odd > 0 else 0
+                
+                # Predição de Over/Under 2.5
+                over_under_pred = 'Under 2.5' if match.odd_under_25 < match.odd_over_25 else 'Over 2.5'
+                
+                recommendations.append({
+                    'match_id': match.id,
+                    'home_team': match.team_home,
+                    'away_team': match.team_away,
+                    'league': match.league,
+                    'match_date': match.match_date.isoformat() if match.match_date else 'N/A',
+                    'match_time': f"{match.hour}:{match.minute}" if match.hour and match.minute else 'N/A',
+                    'predicted_winner': predicted_winner,
+                    'confidence': round(confidence, 1),
+                    'odds': min_odd,
+                    'value': round(value, 2),
+                    'over_under': over_under_pred,
+                    'odds_home': match.odd_home,
+                    'odds_draw': match.odd_draw,
+                    'odds_away': match.odd_away
+                })
             
-            recommendations.append({
-                'match_id': match.id,
-                'home_team': match.home_team,
-                'away_team': match.away_team,
-                'league': match.league,
-                'match_date': match.match_date.isoformat(),
-                'predicted_winner': match.predicted_winner,
-                'confidence': match.prediction_confidence,
-                'odds': odds,
-                'value': round(value, 2),
-                'predicted_score': f"{match.predicted_home_score}-{match.predicted_away_score}"
-            })
-        
-        return {
-            'status': 'success',
-            'count': len(recommendations),
-            'recommendations': recommendations
-        }
+            # Ordena por value (maior value = melhor aposta)
+            recommendations.sort(key=lambda x: x['value'], reverse=True)
+            
+            return {
+                'status': 'success',
+                'count': len(recommendations[:20]),  # Retorna top 20
+                'recommendations': recommendations[:20]
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/predictions/stats")
+async def get_prediction_stats():
+    """
+    Retorna estatísticas de validação de predições
+    Atualizado automaticamente pelo scheduler a cada 3 minutos
+    """
+    try:
+        return {
+            'status': 'success',
+            'stats': prediction_stats,
+            'scheduler_running': scheduler_running,
+            'last_updated': datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'stats': prediction_stats,
+            'scheduler_running': False,
+            'error': str(e)
+        }
+
+@app.post("/api/matches/{match_id}/result")
+async def update_match_result(
+    match_id: int,
+    goals_home: int = 0,
+    goals_away: int = 0
+):
+    """
+    Atualiza resultado de uma partida manualmente
+    Útil para validação rápida ou correção de dados
+    """
+    try:
+        with get_db() as db:
+            
+            # Busca a partida
+            match = db.query(Match).filter(Match.id == match_id).first()
+            if not match:
+                raise HTTPException(status_code=404, detail="Partida não encontrada")
+            
+            # Atualiza os campos
+            match.goals_home = goals_home
+            match.goals_away = goals_away
+            match.total_goals = goals_home + goals_away
+            
+            # Determina o resultado
+            if goals_home > goals_away:
+                match.result = 'home'
+            elif goals_away > goals_home:
+                match.result = 'away'
+            else:
+                match.result = 'draw'
+            
+            match.status = 'finished'
+            
+            db.commit()
+            
+            print(f"✅ Resultado atualizado manualmente: {match.team_home} {goals_home}x{goals_away} {match.team_away}")
+            
+            # Valida predições após atualização
+            validate_predictions()
+            
+            # Envia notificação via WebSocket
+            await broadcast_update({
+                'type': 'result_updated',
+                'match_id': match_id,
+                'match': f"{match.team_home} vs {match.team_away}",
+                'score': f"{goals_home}-{goals_away}",
+                'result': match.result,
+                'message': f"Resultado atualizado: {match.team_home} {goals_home}x{goals_away} {match.team_away}",
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            return {
+                'status': 'success',
+                'match': {
+                    'id': match.id,
+                    'team_home': match.team_home,
+                    'team_away': match.team_away,
+                    'goals_home': goals_home,
+                    'goals_away': goals_away,
+                    'result': match.result
+                },
+                'prediction_stats': prediction_stats
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao atualizar resultado: {str(e)}")
 
 @app.get("/api/export/csv")
 async def export_csv(league: Optional[str] = None, limit: int = 1000):
@@ -852,36 +1285,35 @@ async def export_csv(league: Optional[str] = None, limit: int = 1000):
     Exporta dados em formato CSV
     """
     try:
-        db = next(get_db())
-        
-        query = db.query(Match)
-        if league:
-            query = query.filter(Match.league == league)
-        
-        matches = query.order_by(desc(Match.match_date)).limit(limit).all()
-        
-        # Gera CSV
-        csv_lines = [
-            "ID,Liga,Data,Casa,Fora,Odds Casa,Odds Empate,Odds Fora,Placar Casa,Placar Fora,Predição Vencedor,Predição Casa,Predição Fora,Confiança"
-        ]
-        
-        for m in matches:
-            csv_lines.append(
-                f"{m.id},{m.league},{m.match_date},{m.home_team},{m.away_team},"
-                f"{m.home_odds},{m.draw_odds},{m.away_odds},"
-                f"{m.home_score or ''},{m.away_score or ''},"
-                f"{m.predicted_winner or ''},{m.predicted_home_score or ''},{m.predicted_away_score or ''},"
-                f"{m.prediction_confidence or ''}"
-            )
-        
-        csv_content = "\n".join(csv_lines)
-        
-        return {
-            'status': 'success',
-            'filename': f'matches_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
-            'content': csv_content,
-            'rows': len(matches)
-        }
+        with get_db() as db:
+            
+            query = db.query(Match)
+            if league:
+                query = query.filter(Match.league == league)
+            
+            matches = query.order_by(desc(Match.match_date)).limit(limit).all()
+            
+            # Gera CSV
+            csv_lines = [
+                "ID,Liga,Data,Casa,Fora,Odds Casa,Odds Empate,Odds Fora,Placar Casa,Placar Fora,Resultado"
+            ]
+            
+            for m in matches:
+                csv_lines.append(
+                    f"{m.id},{m.league},{m.match_date},{m.team_home},{m.team_away},"
+                    f"{m.odd_home},{m.odd_draw},{m.odd_away},"
+                    f"{m.goals_home or ''},{m.goals_away or ''},"
+                    f"{m.result or ''}"
+                )
+            
+            csv_content = "\n".join(csv_lines)
+            
+            return {
+                'status': 'success',
+                'filename': f'matches_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                'content': csv_content,
+                'rows': len(matches)
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

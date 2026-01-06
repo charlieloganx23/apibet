@@ -29,8 +29,45 @@ def print_header():
 def check_port(port):
     """Verifica se a porta está disponível"""
     import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) != 0
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            result = s.connect_ex(('localhost', port))
+            return result != 0
+    except Exception as e:
+        print(f"{Colors.YELLOW}⚠️ Erro ao verificar porta {port}: {e}{Colors.RESET}")
+        return True
+
+def kill_process_on_port(port):
+    """Encerra processos usando uma porta específica"""
+    if os.name == 'nt':
+        try:
+            result = subprocess.run(
+                f'netstat -ano | findstr :{port}',
+                shell=True,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.stdout:
+                lines = result.stdout.strip().split('\n')
+                pids = set()
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        pid = parts[-1]
+                        if pid.isdigit() and pid != '0':
+                            pids.add(pid)
+                
+                for pid in pids:
+                    subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+                    print(f"{Colors.YELLOW}  • Processo {pid} encerrado{Colors.RESET}")
+                
+                time.sleep(2)
+                return True
+        except Exception as e:
+            print(f"{Colors.YELLOW}  • Erro ao encerrar processo: {e}{Colors.RESET}")
+    return False
 
 def start_api():
     """Inicia o servidor FastAPI"""
@@ -39,33 +76,28 @@ def start_api():
     if not check_port(8000):
         print(f"{Colors.RED}❌ Porta 8000 já está em uso!{Colors.RESET}")
         print(f"{Colors.YELLOW}💡 Encerrando processo anterior...{Colors.RESET}")
-        # Tenta encerrar processo na porta 8000
-        if os.name == 'nt':
-            os.system('netstat -ano | findstr :8000 > nul && for /f "tokens=5" %a in (\'netstat -ano ^| findstr :8000\') do taskkill /F /PID %a > nul 2>&1')
-        time.sleep(2)
+        kill_process_on_port(8000)
     
-    # Inicia API em background
+    # Inicia API em background (sem capturar output para não bloquear)
     if os.name == 'nt':
         # Windows
         api_process = subprocess.Popen(
             ['python', '-m', 'uvicorn', 'web_api:app', '--reload', '--port', '8000'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_CONSOLE
         )
     else:
         # Linux/Mac
         api_process = subprocess.Popen(
-            ['python', '-m', 'uvicorn', 'web_api:app', '--reload', '--port', '8000'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            ['python', '-m', 'uvicorn', 'web_api:app', '--reload', '--port', '8000']
         )
     
-    # Aguarda a API iniciar
-    for i in range(10):
+    # Aguarda a API iniciar (dá tempo para os imports do Python)
+    print(f"{Colors.YELLOW}  Aguardando API iniciar{Colors.RESET}", end='', flush=True)
+    time.sleep(2)  # Delay inicial para imports
+    for i in range(15):
         time.sleep(1)
         if not check_port(8000):
-            print(f"{Colors.GREEN}✅ API iniciada: http://localhost:8000{Colors.RESET}")
+            print(f"\n{Colors.GREEN}✅ API iniciada: http://localhost:8000{Colors.RESET}")
             return api_process
         print(f"{Colors.YELLOW}.{Colors.RESET}", end='', flush=True)
     
@@ -79,34 +111,31 @@ def start_dashboard():
     if not check_port(3000):
         print(f"{Colors.RED}❌ Porta 3000 já está em uso!{Colors.RESET}")
         print(f"{Colors.YELLOW}💡 Encerrando processo anterior...{Colors.RESET}")
-        if os.name == 'nt':
-            os.system('netstat -ano | findstr :3000 > nul && for /f "tokens=5" %a in (\'netstat -ano ^| findstr :3000\') do taskkill /F /PID %a > nul 2>&1')
-        time.sleep(2)
+        kill_process_on_port(3000)
     
-    # Inicia Dashboard em background
+    # Inicia Dashboard em background (sem capturar output para não bloquear)
     if os.name == 'nt':
         dashboard_process = subprocess.Popen(
             ['python', 'serve_dashboard.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_CONSOLE
         )
     else:
         dashboard_process = subprocess.Popen(
-            ['python', 'serve_dashboard.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            ['python', 'serve_dashboard.py']
         )
     
-    # Aguarda o Dashboard iniciar
-    for i in range(10):
+    # Aguarda o Dashboard iniciar (dá tempo para os imports do Python)
+    print(f"{Colors.YELLOW}  Aguardando Dashboard iniciar{Colors.RESET}", end='', flush=True)
+    time.sleep(2)  # Delay inicial para imports
+    for i in range(15):
         time.sleep(1)
         if not check_port(3000):
-            print(f"{Colors.GREEN}✅ Dashboard iniciado: http://localhost:3000{Colors.RESET}")
+            print(f"\n{Colors.GREEN}✅ Dashboard iniciado: http://localhost:3000/dashboard.html{Colors.RESET}")
             return dashboard_process
         print(f"{Colors.YELLOW}.{Colors.RESET}", end='', flush=True)
     
     print(f"\n{Colors.RED}❌ Erro ao iniciar Dashboard{Colors.RESET}")
+    print(f"{Colors.YELLOW}💡 Verifique se o serve_dashboard.py está funcionando: python serve_dashboard.py{Colors.RESET}")
     return None
 
 def open_browser():
