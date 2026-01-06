@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Teste WebSocket</title>
+</head>
+<body>
+    <h1>Teste de Conexão WebSocket</h1>
+    <div id="status">Conectando...</div>
+    <div id="log"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const logDiv = document.getElementById('log');
+
+        function log(msg) {
+            console.log(msg);
+            logDiv.innerHTML += `<p>${new Date().toLocaleTimeString()}: ${msg}</p>`;
+        }
+
+        try {
+            log('Tentando conectar em: ws://localhost:8000/ws');
+            const ws = new WebSocket('ws://localhost:8000/ws');
+
+            ws.onopen = () => {
+                statusDiv.innerHTML = '✅ CONECTADO!';
+                statusDiv.style.color = 'green';
+                log('WebSocket conectado com sucesso!');
+            };
+
+            ws.onmessage = (event) => {
+                log('Mensagem recebida: ' + event.data);
+            };
+
+            ws.onerror = (error) => {
+                statusDiv.innerHTML = '❌ ERRO!';
+                statusDiv.style.color = 'red';
+                log('Erro: ' + JSON.stringify(error));
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = (event) => {
+                statusDiv.innerHTML = '🔴 DESCONECTADO';
+                statusDiv.style.color = 'orange';
+                log('WebSocket fechado. Code: ' + event.code + ', Reason: ' + event.reason);
+            };
+        } catch (error) {
+            statusDiv.innerHTML = '❌ ERRO CRÍTICO!';
+            statusDiv.style.color = 'red';
+            log('Erro crítico: ' + error.message);
+            console.error(error);
+        }
+    </script>
+</body>
+</html>

@@ -16,13 +16,21 @@ const MAX_WS_RECONNECT_ATTEMPTS = 5;
 
 // Inicialização
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('🚀 Dashboard inicializando...');
+    console.log('📡 API_URL:', API_URL);
+    console.log('🔌 WS_URL:', WS_URL);
+    console.log('⚙️ USE_API:', USE_API);
+    
     initializeEventListeners();
     loadData();
     updateScraperStatus();
     
     // Conectar WebSocket se API estiver ativada
     if (USE_API) {
+        console.log('🔌 Iniciando conexão WebSocket...');
         connectWebSocket();
+    } else {
+        console.log('⚠️ WebSocket desabilitado (USE_API = false)');
     }
 });
 
@@ -53,11 +61,15 @@ function initializeEventListeners() {
 // ============================================================================
 
 function connectWebSocket() {
+    console.log('🔌 Tentando conectar WebSocket em:', WS_URL);
+    
     if (websocket && websocket.readyState === WebSocket.OPEN) {
+        console.log('✅ WebSocket já está conectado');
         return; // Já conectado
     }
     
     try {
+        console.log('🔄 Criando nova conexão WebSocket...');
         websocket = new WebSocket(WS_URL);
         
         websocket.onopen = () => {
