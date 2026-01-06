@@ -339,8 +339,8 @@ async function loadData() {
     
     try {
         if (USE_API) {
-            // Usar API REST
-            const response = await fetch(`${API_URL}/api/matches?limit=500`);
+            // Usar API REST - buscar mais partidas (1000)
+            const response = await fetch(`${API_URL}/api/matches?limit=1000`);
             
             if (!response.ok) {
                 throw new Error(`Erro HTTP: ${response.status}`);
@@ -482,13 +482,19 @@ function applyFilters() {
         // Filtro de status (melhorado)
         if (statusFilter !== 'all') {
             if (statusFilter === 'finished') {
-                // Finalizadas = tem resultado confirmado
-                if (match.status !== 'finished') {
+                // Finalizadas = status 'finished' OU tem gols definidos
+                const isFinished = match.status === 'finished' || 
+                                   (match.goals_home !== null && match.goals_away !== null);
+                if (!isFinished) {
                     return false;
                 }
             } else if (statusFilter === 'scheduled') {
-                // Agendadas = scheduled, live ou expired (sem resultado)
-                if (match.status === 'finished') {
+                // Agendadas = scheduled, live, expired (sem resultado final)
+                const isScheduled = match.status === 'scheduled' || 
+                                    match.status === 'live' || 
+                                    match.status === 'expired' ||
+                                    (match.goals_home === null || match.goals_away === null);
+                if (!isScheduled) {
                     return false;
                 }
             }
@@ -517,7 +523,11 @@ function updateTable() {
     const tbody = document.getElementById('matchesTableBody');
     const count = document.getElementById('tableCount');
     
-    count.textContent = `Mostrando ${filteredMatches.length} partidas`;
+    const statusFilter = document.getElementById('filterStatus').value;
+    const statusLabel = statusFilter === 'finished' ? 'finalizadas' : 
+                        statusFilter === 'scheduled' ? 'agendadas' : 'partidas';
+    
+    count.textContent = `Mostrando ${Math.min(filteredMatches.length, 100)} de ${filteredMatches.length} ${statusLabel}`;
     
     if (filteredMatches.length === 0) {
         tbody.innerHTML = '<tr><td colspan="10" class="loading">Nenhuma partida encontrada</td></tr>';
@@ -526,12 +536,26 @@ function updateTable() {
     
     tbody.innerHTML = filteredMatches
         .sort((a, b) => {
-            // Ordenar por horário
-            const timeA = parseInt(a.hour) * 60 + parseInt(a.minute);
-            const timeB = parseInt(b.hour) * 60 + parseInt(b.minute);
-            return timeA - timeB;
+            // Determinar se são finalizadas
+            const aFinished = a.status === 'finished' || (a.goals_home !== null && a.goals_away !== null);
+            const bFinished = b.status === 'finished' || (b.goals_home !== null && b.goals_away !== null);
+            
+            // Se ambas finalizadas, ordenar por ID decrescente (mais recentes primeiro)
+            if (aFinished && bFinished) {
+                return (b.id || 0) - (a.id || 0);
+            }
+            
+            // Se ambas agendadas, ordenar por horário crescente (próximas primeiro)
+            if (!aFinished && !bFinished) {
+                const timeA = parseInt(a.hour) * 60 + parseInt(a.minute);
+                const timeB = parseInt(b.hour) * 60 + parseInt(b.minute);
+                return timeA - timeB;
+            }
+            
+            // Finalizadas vêm depois das agendadas
+            return aFinished ? 1 : -1;
         })
-        .slice(0, 50) // Limitar a 50 partidas
+        .slice(0, 100) // Limitar a 100 partidas
         .map(match => `
             <tr>
                 <td><strong>${match.hour}:${match.minute}</strong></td>

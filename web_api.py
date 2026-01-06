@@ -146,7 +146,10 @@ async def get_matches(
                 elif status == 'scheduled':
                     query = query.filter(Match.total_goals.is_(None))
             
-            matches = query.order_by(Match.hour, Match.minute).limit(limit).all()
+            # Ordenação: mais recentes primeiro (ID decrescente)
+            # Isso garante que partidas finalizadas mais recentes apareçam primeiro
+            # E partidas agendadas sejam ordenadas por ordem de inserção (mais recentes primeiro)
+            matches = query.order_by(Match.id.desc()).limit(limit).all()
             
             # Adicionar campo 'status' dinamicamente considerando horário
             from datetime import datetime, timedelta
