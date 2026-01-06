@@ -69,6 +69,7 @@ class MatchResponse(BaseModel):
     team_away: str
     hour: str
     minute: str
+    scheduled_time: Optional[str] = None  # Formato "HH.MM"
     odd_home: float
     odd_draw: float
     odd_away: float
@@ -144,9 +145,16 @@ async def get_matches(
             
             if status:
                 if status == 'finished':
-                    query = query.filter(Match.total_goals.isnot(None))
+                    # Partida finalizada = tem goals_home E goals_away preenchidos
+                    query = query.filter(
+                        Match.goals_home.isnot(None),
+                        Match.goals_away.isnot(None)
+                    )
                 elif status == 'scheduled':
-                    query = query.filter(Match.total_goals.is_(None))
+                    # Partida agendada = goals_home OU goals_away são None
+                    query = query.filter(
+                        (Match.goals_home.is_(None)) | (Match.goals_away.is_(None))
+                    )
             
             # Ordenação: ID decrescente (mais recentes primeiro)
             # Ordenação específica será feita no frontend
@@ -199,9 +207,15 @@ async def get_matches(
                                 match_status = "expired"
                         except:
                             # Fallback para hour/minute se scheduled_time não funcionar
-                            match_time_minutes = match.hour * 60 + match.minute
-                            current_time_minutes = site_time.hour * 60 + site_time.minute
-                            time_diff_minutes = current_time_minutes - match_time_minutes
+                            try:
+                                match_hour = int(match.hour) if match.hour else 0
+                                match_minute = int(match.minute) if match.minute else 0
+                                match_time_minutes = match_hour * 60 + match_minute
+                                current_time_minutes = site_time.hour * 60 + site_time.minute
+                                time_diff_minutes = current_time_minutes - match_time_minutes
+                            except (ValueError, TypeError):
+                                match_status = "scheduled"
+                                continue
                             
                             if time_diff_minutes > 120:
                                 match_status = "expired"
@@ -211,9 +225,15 @@ async def get_matches(
                                 match_status = "scheduled"
                     else:
                         # Fallback final: usar hour/minute
-                        match_time_minutes = match.hour * 60 + match.minute
-                        current_time_minutes = site_time.hour * 60 + site_time.minute
-                        time_diff_minutes = current_time_minutes - match_time_minutes
+                        try:
+                            match_hour = int(match.hour) if match.hour else 0
+                            match_minute = int(match.minute) if match.minute else 0
+                            match_time_minutes = match_hour * 60 + match_minute
+                            current_time_minutes = site_time.hour * 60 + site_time.minute
+                            time_diff_minutes = current_time_minutes - match_time_minutes
+                        except (ValueError, TypeError):
+                            match_status = "scheduled"
+                            continue
                         
                         if time_diff_minutes > 120:
                             match_status = "expired"
@@ -808,8 +828,14 @@ def update_match_status_by_time():
             
             updated_count = 0
             for match in scheduled_matches:
-                # Calcular tempo do jogo em minutos
-                match_time_minutes = match.hour * 60 + match.minute
+                # Calcular tempo do jogo em minutos (converter strings para int)
+                try:
+                    match_hour = int(match.hour) if match.hour else 0
+                    match_minute = int(match.minute) if match.minute else 0
+                    match_time_minutes = match_hour * 60 + match_minute
+                except (ValueError, TypeError):
+                    # Se não conseguir converter, pular esta partida
+                    continue
                 
                 # Se tem match_date, usar ela para comparação
                 if match.match_date:
