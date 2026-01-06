@@ -9,14 +9,14 @@ from models_rapidapi import Match
 with get_db() as db:
     now_local = datetime.now()
     site_time = now_local + timedelta(hours=4)
-    cutoff_time = site_time - timedelta(hours=1)  # 1 hora atrás
+    cutoff_time = site_time - timedelta(minutes=30)  # 30 minutos atrás
     
     print("="*80)
-    print("🧹 LIMPEZA DE PARTIDAS ANTIGAS - ÚLTIMA 1H")
+    print("🧹 LIMPEZA DE PARTIDAS ANTIGAS - ÚLTIMOS 30MIN")
     print("="*80)
     print(f"⏰ Horário LOCAL: {now_local.strftime('%d/%m/%Y %H:%M:%S')}")
     print(f"🌐 Horário do SITE: {site_time.strftime('%d/%m/%Y %H:%M:%S')}")
-    print(f"⏱️  Limite (1h atrás): {cutoff_time.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"⏱️  Limite (30min atrás): {cutoff_time.strftime('%d/%m/%Y %H:%M:%S')}")
     print("\n🔧 Modo: Remover TODAS as partidas antigas (com ou sem resultado)")
     
     # Buscar TODAS as partidas (com ou sem resultado)
@@ -43,7 +43,7 @@ with get_db() as db:
             if match_time > site_time:
                 match_time = match_time - timedelta(days=1)
             
-            # Verificar se passou do limite (1h)
+            # Verificar se passou do limite (30min)
             if match_time < cutoff_time:
                 hours_ago = (site_time - match_time).total_seconds() / 3600
                 has_result = (match.goals_home is not None and match.goals_away is not None)
