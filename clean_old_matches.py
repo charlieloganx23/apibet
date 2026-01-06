@@ -1,63 +1,87 @@
 """
-Limpar partidas antigas sem resultado
-Remove partidas que já passaram há muito tempo e não têm resultado
+Limpar partidas antigas - mantém apenas últimas 24 horas
+Remove TODAS as partidas (com ou sem resultado) que passaram há mais de 24 horas
 """
 from datetime import datetime, timedelta
 from database_rapidapi import get_db
 from models_rapidapi import Match
 
 with get_db() as db:
-    site_time = datetime.now() + timedelta(hours=4)
+    now_local = datetime.now()
+    site_time = now_local + timedelta(hours=4)
+    cutoff_time = site_time - timedelta(hours=12)  # 12 horas atrás
     
     print("="*80)
-    print("🧹 LIMPEZA DE PARTIDAS ANTIGAS")
+    print("🧹 LIMPEZA DE PARTIDAS ANTIGAS - ÚLTIMAS 12H")
     print("="*80)
-    print(f"⏰ Horário do site: {site_time.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"⏰ Horário LOCAL: {now_local.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"🌐 Horário do SITE: {site_time.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"⏱️  Limite (12h atrás): {cutoff_time.strftime('%d/%m/%Y %H:%M:%S')}")
+    print("\n🔧 Modo: Remover TODAS as partidas antigas (com ou sem resultado)")
     
-    # Buscar partidas sem resultado
+    # Buscar TODAS as partidas (com ou sem resultado)
+    all_matches = db.query(Match).all()
+    
     old_matches = []
-    for match in db.query(Match).filter(Match.goals_home.is_(None)).all():
+    for match in all_matches:
         if not match.scheduled_time:
             continue
         
         try:
+            # Parse do scheduled_time (formato: "HH.MM")
             parts = match.scheduled_time.split('.')
             if len(parts) != 2:
                 continue
             
-            match_hour = int(parts[0])
-            match_minute = int(parts[1])
+            hour = int(parts[0])
+            minute = int(parts[1])
             
-            # Calcular se passou há mais de 6 horas
-            match_minutes = match_hour * 60 + match_minute
-            site_minutes = site_time.hour * 60 + site_time.minute
+            # Criar datetime para a partida (assumindo hoje ou ontem)
+            match_time = site_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
             
-            diff = site_minutes - match_minutes
+            # Se a hora da partida é maior que a hora atual, assumimos que é de ontem
+            if match_time > site_time:
+                match_time = match_time - timedelta(days=1)
             
-            # Se a diferença é muito grande (passou há mais de 6h), remover
-            if diff > 360 or diff < -720:  # Mais de 6 horas de diferença
-                old_matches.append(match)
-        except:
+            # Verificar se passou do limite (12h)
+            if match_time < cutoff_time:
+                hours_ago = (site_time - match_time).total_seconds() / 3600
+                has_result = (match.goals_home is not None and match.goals_away is not None)
+                result_str = f"{match.goals_home}x{match.goals_away}" if has_result else "Sem resultado"
+                
+                old_matches.append({
+                    'match': match,
+                    'time': match_time,
+                    'hours_ago': hours_ago,
+                    'result': result_str
+                })
+        except Exception as e:
             continue
     
     print(f"\n📋 Partidas antigas encontradas: {len(old_matches)}")
     
     if len(old_matches) > 0:
-        print("\n🗑️  Removendo partidas antigas:")
-        for m in old_matches[:10]:  # Mostrar as 10 primeiras
+        print("\n🗑️  Partidas a serem removidas:")
+        for item in old_matches[:15]:  # Mostrar as 15 primeiras
+            m = item['match']
             print(f"   ❌ ID {m.id:4d} | {m.scheduled_time:5s} | {m.league:7s} | {m.team_home} vs {m.team_away}")
+            print(f"      ⏱️  {item['result']} | Passou há {item['hours_ago']:.1f} horas")
         
-        if len(old_matches) > 10:
-            print(f"   ... e mais {len(old_matches) - 10} partidas")
+        if len(old_matches) > 15:
+            print(f"   ... e mais {len(old_matches) - 15} partidas")
         
         # Confirmar
         resposta = input(f"\n⚠️  Deseja remover {len(old_matches)} partidas antigas? (s/n): ")
         
         if resposta.lower() == 's':
-            for match in old_matches:
-                db.delete(match)
+            for item in old_matches:
+                db.delete(item['match'])
             db.commit()
+            
+            # Verificar quantas partidas restaram
+            remaining = db.query(Match).count()
             print(f"\n✅ {len(old_matches)} partidas removidas com sucesso!")
+            print(f"📊 Partidas restantes no banco: {remaining}")
         else:
             print("\n❌ Operação cancelada")
     else:
