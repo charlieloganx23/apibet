@@ -339,8 +339,8 @@ async function loadData() {
     
     try {
         if (USE_API) {
-            // Usar API REST - buscar mais partidas (1000)
-            const response = await fetch(`${API_URL}/api/matches?limit=1000`);
+            // Usar API REST - buscar até 2000 partidas para pegar todas
+            const response = await fetch(`${API_URL}/api/matches?limit=2000`);
             
             if (!response.ok) {
                 throw new Error(`Erro HTTP: ${response.status}`);
@@ -473,6 +473,14 @@ function applyFilters() {
     console.log('🔍 Aplicando filtros:', { leagueFilter, statusFilter, searchTerm });
     console.log('📊 Total de partidas antes do filtro:', allMatches.length);
     
+    // Debug: verificar algumas partidas
+    if (allMatches.length > 0) {
+        console.log('📋 Amostra de partidas (primeiras 3):');
+        allMatches.slice(0, 3).forEach(m => {
+            console.log(`  - ${m.team_home} vs ${m.team_away} | goals_home: ${m.goals_home}, goals_away: ${m.goals_away}, status: ${m.status}`);
+        });
+    }
+    
     filteredMatches = allMatches.filter(match => {
         // Filtro de liga
         if (leagueFilter !== 'all' && match.league !== leagueFilter) {
@@ -482,18 +490,16 @@ function applyFilters() {
         // Filtro de status (melhorado)
         if (statusFilter !== 'all') {
             if (statusFilter === 'finished') {
-                // Finalizadas = status 'finished' OU tem gols definidos
-                const isFinished = match.status === 'finished' || 
-                                   (match.goals_home !== null && match.goals_away !== null);
+                // Finalizadas = tem gols definidos (resultado confirmado)
+                const isFinished = (match.goals_home !== null && match.goals_home !== undefined) && 
+                                   (match.goals_away !== null && match.goals_away !== undefined);
                 if (!isFinished) {
                     return false;
                 }
             } else if (statusFilter === 'scheduled') {
-                // Agendadas = scheduled, live, expired (sem resultado final)
-                const isScheduled = match.status === 'scheduled' || 
-                                    match.status === 'live' || 
-                                    match.status === 'expired' ||
-                                    (match.goals_home === null || match.goals_away === null);
+                // Agendadas = NÃO tem gols definidos (aguardando ou em andamento)
+                const isScheduled = (match.goals_home === null || match.goals_home === undefined) || 
+                                    (match.goals_away === null || match.goals_away === undefined);
                 if (!isScheduled) {
                     return false;
                 }

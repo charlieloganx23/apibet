@@ -79,6 +79,8 @@ class MatchResponse(BaseModel):
     status: str
     total_goals: Optional[int]
     result: Optional[str]
+    goals_home: Optional[int] = None
+    goals_away: Optional[int] = None
     
     class Config:
         from_attributes = True  # Para Pydantic v2 (antes era orm_mode = True)
@@ -124,14 +126,14 @@ async def root():
 async def get_matches(
     league: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 100
+    limit: int = 2000
 ):
     """
     Retorna lista de partidas com filtros opcionais
     
     - **league**: Filtrar por liga (euro, express, copa, super, premier)
     - **status**: Filtrar por status (scheduled, finished)
-    - **limit**: Número máximo de resultados (padrão: 100)
+    - **limit**: Número máximo de resultados (padrão: 2000)
     """
     try:
         with get_db() as db:
@@ -146,9 +148,8 @@ async def get_matches(
                 elif status == 'scheduled':
                     query = query.filter(Match.total_goals.is_(None))
             
-            # Ordenação: mais recentes primeiro (ID decrescente)
-            # Isso garante que partidas finalizadas mais recentes apareçam primeiro
-            # E partidas agendadas sejam ordenadas por ordem de inserção (mais recentes primeiro)
+            # Ordenação: ID decrescente (mais recentes primeiro)
+            # Ordenação específica será feita no frontend
             matches = query.order_by(Match.id.desc()).limit(limit).all()
             
             # Adicionar campo 'status' dinamicamente considerando horário
@@ -239,8 +240,8 @@ async def get_matches(
                         "status": match_status,
                         "total_goals": float(match.total_goals) if match.total_goals is not None else None,
                         "result": match.result,
-                        "goals_home": int(match.goals_home) if hasattr(match, 'goals_home') and match.goals_home is not None else None,
-                        "goals_away": int(match.goals_away) if hasattr(match, 'goals_away') and match.goals_away is not None else None
+                        "goals_home": int(match.goals_home) if match.goals_home is not None else None,
+                        "goals_away": int(match.goals_away) if match.goals_away is not None else None
                     }
                     result.append(match_dict)
                 except Exception as e:
