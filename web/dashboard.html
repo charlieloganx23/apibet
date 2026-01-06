@@ -12,7 +12,7 @@
         <header class="header">
             <div class="header-content">
                 <h1>🎯 ApiBet Dashboard</h1>
-                <p class="subtitle">Sistema de Predições de Futebol Virtual - Fase 3 Tempo Real</p>
+                <p class="subtitle">Sistema de Predições de Futebol Virtual - Fase 4 Analytics</p>
             </div>
             <div class="header-actions">
                 <button id="btnRefresh" class="btn btn-primary">
@@ -27,8 +27,14 @@
                 <button id="btnLogs" class="btn btn-outline">
                     <span class="icon">📋</span> Logs
                 </button>
+                <button id="btnAnalytics" class="btn btn-outline">
+                    <span class="icon">📊</span> Analytics
+                </button>
+                <button id="btnRecommendations" class="btn btn-outline">
+                    <span class="icon">💎</span> Recomendações
+                </button>
                 <button id="btnAnalyze" class="btn btn-outline">
-                    <span class="icon">📊</span> Análise
+                    <span class="icon">📈</span> Análise
                 </button>
             </div>
         </header>
@@ -190,6 +196,76 @@
                 <!-- Será preenchido ao clicar em "Análise de Padrões" -->
             </div>
         </div>
+
+        <!-- Analytics Section (FASE 4) -->
+        <div class="section" id="analyticsSection" style="display: none;">
+            <h2 class="section-title">📊 Analytics & Insights</h2>
+            
+            <!-- KPIs Cards -->
+            <div class="kpi-grid" id="kpiGrid">
+                <div class="kpi-card">
+                    <div class="kpi-icon">🎯</div>
+                    <div class="kpi-content">
+                        <div class="kpi-label">Taxa de Acerto</div>
+                        <div class="kpi-value" id="kpiAccuracy">-</div>
+                    </div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">📊</div>
+                    <div class="kpi-content">
+                        <div class="kpi-label">Placar Exato</div>
+                        <div class="kpi-value" id="kpiExactScore">-</div>
+                    </div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">⚽</div>
+                    <div class="kpi-content">
+                        <div class="kpi-label">Total de Partidas</div>
+                        <div class="kpi-value" id="kpiTotalMatches">-</div>
+                    </div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-icon">✅</div>
+                    <div class="kpi-content">
+                        <div class="kpi-label">Finalizadas</div>
+                        <div class="kpi-value" id="kpiFinished">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="charts-container">
+                <div class="chart-box">
+                    <h3>📈 Distribuição por Liga</h3>
+                    <canvas id="leagueChart"></canvas>
+                </div>
+                <div class="chart-box">
+                    <h3>📊 Média de Odds</h3>
+                    <canvas id="oddsChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recommendations Section (FASE 4) -->
+        <div class="section" id="recommendationsSection" style="display: none;">
+            <h2 class="section-title">💎 Recomendações de Apostas</h2>
+            <div class="table-controls">
+                <div class="table-info">
+                    <span>Top apostas com maior confiança</span>
+                </div>
+                <div class="table-actions">
+                    <button id="btnRefreshRec" class="btn btn-small">
+                        <span class="icon">🔄</span> Atualizar
+                    </button>
+                    <button id="btnExportCSV" class="btn btn-small btn-secondary">
+                        <span class="icon">💾</span> Exportar CSV
+                    </button>
+                </div>
+            </div>
+            <div id="recommendationsContainer">
+                <div class="loading">Carregando recomendações...</div>
+            </div>
+        </div>
     </div>
 
     <!-- Toast Notifications Container -->
@@ -201,6 +277,8 @@
         <p>Processando...</p>
     </div>
 
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

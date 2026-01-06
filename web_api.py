@@ -26,8 +26,8 @@ from sqlalchemy import func, desc
 # Inicializar FastAPI
 app = FastAPI(
     title="ApiBet API",
-    description="API REST para sistema de predições de futebol virtual - Fase 3",
-    version="1.3.0"
+    description="API REST para sistema de predições de futebol virtual - Fase 4",
+    version="1.4.0"
 )
 
 # Configurar CORS
@@ -656,6 +656,234 @@ async def shutdown_event():
             scraper_process.kill()
     
     print("\n✅ ApiBet API - Encerrado")
+
+# ============================================================================
+# FASE 4: Analytics & Endpoints Avançados
+# ============================================================================
+
+@app.get("/api/analytics/overview")
+async def get_analytics_overview():
+    """
+    Retorna overview de analytics: taxa de acerto, distribuição por liga, etc.
+    """
+    try:
+        db = next(get_db())
+        
+        # Total de partidas
+        total_matches = db.query(Match).count()
+        
+        # Partidas com resultado
+        finished_matches = db.query(Match).filter(
+            Match.home_score.isnot(None)
+        ).count()
+        
+        # Taxa de acerto por tipo de predição
+        correct_predictions = {
+            'winner': 0,
+            'draw': 0,
+            'score': 0,
+            'total': 0
+        }
+        
+        matches_with_prediction = db.query(Match).filter(
+            Match.predicted_winner.isnot(None),
+            Match.home_score.isnot(None)
+        ).all()
+        
+        for match in matches_with_prediction:
+            correct_predictions['total'] += 1
+            
+            # Verifica predição de vencedor
+            actual_winner = 'draw'
+            if match.home_score > match.away_score:
+                actual_winner = 'home'
+            elif match.away_score > match.home_score:
+                actual_winner = 'away'
+            
+            if match.predicted_winner == actual_winner:
+                correct_predictions['winner'] += 1
+            
+            if actual_winner == 'draw':
+                correct_predictions['draw'] += 1
+            
+            # Verifica placar exato
+            if (match.predicted_home_score == match.home_score and 
+                match.predicted_away_score == match.away_score):
+                correct_predictions['score'] += 1
+        
+        # Calcula taxas
+        winner_accuracy = (correct_predictions['winner'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
+        score_accuracy = (correct_predictions['score'] / correct_predictions['total'] * 100) if correct_predictions['total'] > 0 else 0
+        
+        # Distribuição por liga
+        league_stats = db.query(
+            Match.league,
+            func.count(Match.id).label('count'),
+            func.sum(func.case((Match.home_score.isnot(None), 1), else_=0)).label('finished')
+        ).group_by(Match.league).all()
+        
+        leagues = [
+            {
+                'league': stat.league,
+                'total': stat.count,
+                'finished': stat.finished,
+                'pending': stat.count - stat.finished
+            }
+            for stat in league_stats
+        ]
+        
+        # Média de odds
+        avg_odds = db.query(
+            func.avg(Match.home_odds).label('home'),
+            func.avg(Match.draw_odds).label('draw'),
+            func.avg(Match.away_odds).label('away')
+        ).first()
+        
+        return {
+            'status': 'success',
+            'data': {
+                'total_matches': total_matches,
+                'finished_matches': finished_matches,
+                'pending_matches': total_matches - finished_matches,
+                'accuracy': {
+                    'winner': round(winner_accuracy, 2),
+                    'exact_score': round(score_accuracy, 2),
+                    'predictions_made': correct_predictions['total']
+                },
+                'leagues': leagues,
+                'avg_odds': {
+                    'home': round(float(avg_odds.home or 0), 2),
+                    'draw': round(float(avg_odds.draw or 0), 2),
+                    'away': round(float(avg_odds.away or 0), 2)
+                }
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/analytics/timeline")
+async def get_timeline_data():
+    """
+    Retorna dados para gráfico de timeline de partidas
+    """
+    try:
+        db = next(get_db())
+        
+        # Agrupa por data
+        timeline = db.query(
+            func.date(Match.match_date).label('date'),
+            func.count(Match.id).label('count')
+        ).group_by(
+            func.date(Match.match_date)
+        ).order_by('date').all()
+        
+        return {
+            'status': 'success',
+            'data': [
+                {
+                    'date': str(t.date),
+                    'count': t.count
+                }
+                for t in timeline
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/recommendations")
+async def get_recommendations(min_confidence: float = 70.0):
+    """
+    Retorna recomendações de apostas baseadas em confiança da predição
+    """
+    try:
+        db = next(get_db())
+        
+        # Busca partidas futuras com predições
+        upcoming = db.query(Match).filter(
+            Match.home_score.is_(None),
+            Match.predicted_winner.isnot(None),
+            Match.prediction_confidence >= min_confidence
+        ).order_by(
+            desc(Match.prediction_confidence),
+            Match.match_date
+        ).limit(20).all()
+        
+        recommendations = []
+        for match in upcoming:
+            # Calcula value bet (quando odds são maiores que a confiança sugere)
+            expected_prob = match.prediction_confidence / 100
+            
+            if match.predicted_winner == 'home':
+                implied_prob = 1 / match.home_odds if match.home_odds else 0
+                odds = match.home_odds
+            elif match.predicted_winner == 'away':
+                implied_prob = 1 / match.away_odds if match.away_odds else 0
+                odds = match.away_odds
+            else:
+                implied_prob = 1 / match.draw_odds if match.draw_odds else 0
+                odds = match.draw_odds
+            
+            value = (expected_prob - implied_prob) * 100 if implied_prob > 0 else 0
+            
+            recommendations.append({
+                'match_id': match.id,
+                'home_team': match.home_team,
+                'away_team': match.away_team,
+                'league': match.league,
+                'match_date': match.match_date.isoformat(),
+                'predicted_winner': match.predicted_winner,
+                'confidence': match.prediction_confidence,
+                'odds': odds,
+                'value': round(value, 2),
+                'predicted_score': f"{match.predicted_home_score}-{match.predicted_away_score}"
+            })
+        
+        return {
+            'status': 'success',
+            'count': len(recommendations),
+            'recommendations': recommendations
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/export/csv")
+async def export_csv(league: Optional[str] = None, limit: int = 1000):
+    """
+    Exporta dados em formato CSV
+    """
+    try:
+        db = next(get_db())
+        
+        query = db.query(Match)
+        if league:
+            query = query.filter(Match.league == league)
+        
+        matches = query.order_by(desc(Match.match_date)).limit(limit).all()
+        
+        # Gera CSV
+        csv_lines = [
+            "ID,Liga,Data,Casa,Fora,Odds Casa,Odds Empate,Odds Fora,Placar Casa,Placar Fora,Predição Vencedor,Predição Casa,Predição Fora,Confiança"
+        ]
+        
+        for m in matches:
+            csv_lines.append(
+                f"{m.id},{m.league},{m.match_date},{m.home_team},{m.away_team},"
+                f"{m.home_odds},{m.draw_odds},{m.away_odds},"
+                f"{m.home_score or ''},{m.away_score or ''},"
+                f"{m.predicted_winner or ''},{m.predicted_home_score or ''},{m.predicted_away_score or ''},"
+                f"{m.prediction_confidence or ''}"
+            )
+        
+        csv_content = "\n".join(csv_lines)
+        
+        return {
+            'status': 'success',
+            'filename': f'matches_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
+            'content': csv_content,
+            'rows': len(matches)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

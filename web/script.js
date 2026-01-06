@@ -40,6 +40,12 @@ function initializeEventListeners() {
     // Logs (Fase 3)
     document.getElementById('btnLogs').addEventListener('click', showLogs);
     document.getElementById('btnRefreshLogs')?.addEventListener('click', loadLogs);
+    
+    // Analytics & Recommendations (Fase 4)
+    document.getElementById('btnAnalytics')?.addEventListener('click', showAnalytics);
+    document.getElementById('btnRecommendations')?.addEventListener('click', showRecommendations);
+    document.getElementById('btnRefreshRec')?.addEventListener('click', loadRecommendations);
+    document.getElementById('btnExportCSV')?.addEventListener('click', exportCSV);
 }
 
 // ============================================================================
@@ -921,6 +927,245 @@ function displayPrediction(prediction) {
             `).join('')}
         </div>
     `;
+}
+
+// ============================================================================
+// FASE 4: Analytics & Recommendations
+// ============================================================================
+
+let leagueChart = null;
+let oddsChart = null;
+
+function showAnalytics() {
+    // Esconde todas as seções
+    document.getElementById('predictionsSection').style.display = 'none';
+    document.getElementById('logsSection').style.display = 'none';
+    document.getElementById('analysisSection').style.display = 'none';
+    document.getElementById('recommendationsSection').style.display = 'none';
+    
+    // Mostra analytics
+    document.getElementById('analyticsSection').style.display = 'block';
+    
+    loadAnalytics();
+}
+
+async function loadAnalytics() {
+    try {
+        const response = await fetch(`${API_URL}/api/analytics/overview`);
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            const analytics = data.data;
+            
+            // Atualiza KPIs
+            document.getElementById('kpiAccuracy').textContent = 
+                `${analytics.accuracy.winner}%`;
+            document.getElementById('kpiExactScore').textContent = 
+                `${analytics.accuracy.exact_score}%`;
+            document.getElementById('kpiTotalMatches').textContent = 
+                analytics.total_matches;
+            document.getElementById('kpiFinished').textContent = 
+                analytics.finished_matches;
+            
+            // Cria gráfico de distribuição por liga
+            createLeagueChart(analytics.leagues);
+            
+            // Cria gráfico de odds médias
+            createOddsChart(analytics.avg_odds);
+        }
+    } catch (error) {
+        console.error('Erro ao carregar analytics:', error);
+        showToast('Erro ao carregar analytics', 'error');
+    }
+}
+
+function createLeagueChart(leagues) {
+    const ctx = document.getElementById('leagueChart');
+    
+    // Destroi gráfico anterior se existir
+    if (leagueChart) {
+        leagueChart.destroy();
+    }
+    
+    leagueChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: leagues.map(l => l.league.toUpperCase()),
+            datasets: [{
+                label: 'Total',
+                data: leagues.map(l => l.total),
+                backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                borderColor: 'rgba(59, 130, 246, 1)',
+                borderWidth: 2
+            }, {
+                label: 'Finalizadas',
+                data: leagues.map(l => l.finished),
+                backgroundColor: 'rgba(16, 185, 129, 0.5)',
+                borderColor: 'rgba(16, 185, 129, 1)',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+
+function createOddsChart(avgOdds) {
+    const ctx = document.getElementById('oddsChart');
+    
+    // Destroi gráfico anterior se existir
+    if (oddsChart) {
+        oddsChart.destroy();
+    }
+    
+    oddsChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Casa', 'Empate', 'Fora'],
+            datasets: [{
+                data: [avgOdds.home, avgOdds.draw, avgOdds.away],
+                backgroundColor: [
+                    'rgba(59, 130, 246, 0.7)',
+                    'rgba(245, 158, 11, 0.7)',
+                    'rgba(239, 68, 68, 0.7)'
+                ],
+                borderWidth: 2,
+                borderColor: '#fff'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+}
+
+function showRecommendations() {
+    // Esconde todas as seções
+    document.getElementById('predictionsSection').style.display = 'none';
+    document.getElementById('logsSection').style.display = 'none';
+    document.getElementById('analysisSection').style.display = 'none';
+    document.getElementById('analyticsSection').style.display = 'none';
+    
+    // Mostra recomendações
+    document.getElementById('recommendationsSection').style.display = 'block';
+    
+    loadRecommendations();
+}
+
+async function loadRecommendations() {
+    const container = document.getElementById('recommendationsContainer');
+    container.innerHTML = '<div class="loading">Carregando recomendações...</div>';
+    
+    try {
+        const response = await fetch(`${API_URL}/api/recommendations?min_confidence=70`);
+        const data = await response.json();
+        
+        if (data.status === 'success' && data.recommendations.length > 0) {
+            displayRecommendations(data.recommendations);
+        } else {
+            container.innerHTML = '<div class="no-data">Nenhuma recomendação disponível no momento</div>';
+        }
+    } catch (error) {
+        console.error('Erro ao carregar recomendações:', error);
+        container.innerHTML = '<div class="error">Erro ao carregar recomendações</div>';
+    }
+}
+
+function displayRecommendations(recommendations) {
+    const container = document.getElementById('recommendationsContainer');
+    
+    let html = '<div class="recommendations-grid">';
+    
+    recommendations.forEach(rec => {
+        const valueClass = rec.value > 0 ? 'positive' : 'neutral';
+        const winnerBadge = rec.predicted_winner === 'home' ? '🏠 Casa' : 
+                           rec.predicted_winner === 'away' ? '✈️ Fora' : '🤝 Empate';
+        
+        html += `
+            <div class="recommendation-card">
+                <div class="rec-header">
+                    <span class="rec-league">${rec.league.toUpperCase()}</span>
+                    <span class="rec-confidence ${rec.confidence >= 80 ? 'high' : rec.confidence >= 70 ? 'medium' : 'low'}">
+                        ${rec.confidence}% confiança
+                    </span>
+                </div>
+                <div class="rec-match">
+                    <div class="rec-teams">
+                        ${rec.home_team} vs ${rec.away_team}
+                    </div>
+                    <div class="rec-date">${formatDateTime(rec.match_date)}</div>
+                </div>
+                <div class="rec-prediction">
+                    <div class="rec-winner">
+                        <strong>Predição:</strong> ${winnerBadge}
+                    </div>
+                    <div class="rec-score">
+                        <strong>Placar:</strong> ${rec.predicted_score}
+                    </div>
+                </div>
+                <div class="rec-odds">
+                    <div class="rec-odd-value">
+                        <strong>Odd:</strong> ${rec.odds.toFixed(2)}
+                    </div>
+                    <div class="rec-value ${valueClass}">
+                        <strong>Value:</strong> ${rec.value > 0 ? '+' : ''}${rec.value.toFixed(1)}%
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+async function exportCSV() {
+    try {
+        showToast('Gerando arquivo CSV...', 'info');
+        
+        const response = await fetch(`${API_URL}/api/export/csv?limit=1000`);
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            // Cria blob e faz download
+            const blob = new Blob([data.content], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', data.filename);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showToast(`✅ ${data.rows} partidas exportadas!`, 'success');
+        }
+    } catch (error) {
+        console.error('Erro ao exportar CSV:', error);
+        showToast('Erro ao exportar CSV', 'error');
+    }
 }
 
 // Atualizar status do scraper a cada 30 segundos
