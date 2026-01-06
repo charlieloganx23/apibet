@@ -1,19 +1,22 @@
 """
 API REST com FastAPI para o sistema de predições
 Endpoints para servir dados ao dashboard e controlar o scraper
+Fase 3: WebSocket para tempo real e logs
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Set
 import subprocess
 import psutil
 import signal
 from datetime import datetime
 import sys
 import os
+import asyncio
+import json
 
 # Imports do projeto
 from database_rapidapi import get_db
@@ -23,8 +26,8 @@ from sqlalchemy import func, desc
 # Inicializar FastAPI
 app = FastAPI(
     title="ApiBet API",
-    description="API REST para sistema de predições de futebol virtual",
-    version="1.1.0"
+    description="API REST para sistema de predições de futebol virtual - Fase 3",
+    version="1.3.0"
 )
 
 # Configurar CORS
@@ -36,8 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Variável global para armazenar PID do scraper
+# Variáveis globais
 scraper_process = None
+active_websockets: Set[WebSocket] = set()
+last_match_count = 0
 
 # ============================================================================
 # Modelos Pydantic
@@ -434,24 +439,213 @@ async def get_scraper_status():
         raise HTTPException(status_code=500, detail=f"Erro ao verificar status: {str(e)}")
 
 # ============================================================================
+# WebSocket para Tempo Real
+# ============================================================================
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket para atualizações em tempo real"""
+    await websocket.accept()
+    active_websockets.add(websocket)
+    
+    try:
+        # Enviar status inicial
+        with get_db() as db:
+            total = db.query(func.count(Match.id)).scalar()
+        
+        await websocket.send_json({
+            'type': 'connected',
+            'message': 'Conectado ao servidor',
+            'total_matches': total,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Manter conexão aberta
+        while True:
+            # Aguardar mensagens do cliente (ping/pong)
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # Cliente enviou ping, responder com pong
+                if data == 'ping':
+                    await websocket.send_json({
+                        'type': 'pong',
+                        'timestamp': datetime.now().isoformat()
+                    })
+            except asyncio.TimeoutError:
+                # Enviar heartbeat a cada 30s
+                await websocket.send_json({
+                    'type': 'heartbeat',
+                    'timestamp': datetime.now().isoformat()
+                })
+    
+    except WebSocketDisconnect:
+        active_websockets.remove(websocket)
+    except Exception as e:
+        print(f"Erro no WebSocket: {e}")
+        if websocket in active_websockets:
+            active_websockets.remove(websocket)
+
+async def broadcast_update(message: dict):
+    """Envia atualização para todos os clientes conectados"""
+    disconnected = set()
+    
+    for websocket in active_websockets:
+        try:
+            await websocket.send_json(message)
+        except:
+            disconnected.add(websocket)
+    
+    # Remover conexões mortas
+    for websocket in disconnected:
+        active_websockets.remove(websocket)
+
+# ============================================================================
+# Endpoints - Logs
+# ============================================================================
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 50):
+    """Retorna logs do scraper"""
+    try:
+        with get_db() as db:
+            logs = db.query(ScraperLog).order_by(desc(ScraperLog.id)).limit(limit).all()
+            
+            return {
+                'logs': [
+                    {
+                        'id': log.id,
+                        'started_at': log.started_at.isoformat() if log.started_at else None,
+                        'finished_at': log.finished_at.isoformat() if log.finished_at else None,
+                        'status': log.status,
+                        'matches_found': log.matches_found,
+                        'matches_new': log.matches_new,
+                        'matches_updated': log.matches_updated,
+                        'error_message': log.error_message
+                    }
+                    for log in logs
+                ]
+            }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar logs: {str(e)}")
+
+@app.get("/api/logs/latest")
+async def get_latest_log():
+    """Retorna o log mais recente"""
+    try:
+        with get_db() as db:
+            log = db.query(ScraperLog).order_by(desc(ScraperLog.id)).first()
+            
+            if not log:
+                return {'log': None}
+            
+            return {
+                'log': {
+                    'id': log.id,
+                    'started_at': log.started_at.isoformat() if log.started_at else None,
+                    'finished_at': log.finished_at.isoformat() if log.finished_at else None,
+                    'status': log.status,
+                    'matches_found': log.matches_found,
+                    'matches_new': log.matches_new,
+                    'matches_updated': log.matches_updated,
+                    'error_message': log.error_message,
+                    'duration': (log.finished_at - log.started_at).total_seconds() if (log.finished_at and log.started_at) else None
+                }
+            }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar log: {str(e)}")
+
+# ============================================================================
+# Background Task - Monitor de Mudanças
+# ============================================================================
+
+async def monitor_database_changes():
+    """Monitora mudanças no banco e notifica via WebSocket"""
+    global last_match_count
+    
+    while True:
+        try:
+            with get_db() as db:
+                current_count = db.query(func.count(Match.id)).scalar()
+                
+                if current_count > last_match_count and last_match_count > 0:
+                    # Novas partidas adicionadas
+                    new_count = current_count - last_match_count
+                    
+                    # Buscar últimas partidas adicionadas
+                    new_matches = db.query(Match).order_by(desc(Match.id)).limit(new_count).all()
+                    
+                    # Broadcast para clientes
+                    await broadcast_update({
+                        'type': 'new_matches',
+                        'count': new_count,
+                        'total': current_count,
+                        'matches': [
+                            {
+                                'id': m.id,
+                                'league': m.league,
+                                'team_home': m.team_home,
+                                'team_away': m.team_away,
+                                'hour': m.hour,
+                                'minute': m.minute
+                            }
+                            for m in new_matches
+                        ],
+                        'timestamp': datetime.now().isoformat()
+                    })
+                
+                last_match_count = current_count
+        
+        except Exception as e:
+            print(f"Erro ao monitorar banco: {e}")
+        
+        # Verificar a cada 10 segundos
+        await asyncio.sleep(10)
+
+# ============================================================================
 # Startup/Shutdown
 # ============================================================================
 
 @app.on_event("startup")
 async def startup_event():
     """Executado ao iniciar a API"""
+    global last_match_count
+    
     print("="*70)
-    print("🚀 ApiBet API - Iniciando...")
+    print("🚀 ApiBet API - Iniciando (Fase 3)...")
     print("="*70)
-    print("📊 Versão: 1.1.0")
+    print("📊 Versão: 1.3.0")
     print("🌐 Docs: http://localhost:8000/docs")
     print("🔧 Redoc: http://localhost:8000/redoc")
+    print("🔌 WebSocket: ws://localhost:8000/ws")
     print("="*70)
+    
+    # Inicializar contador de partidas
+    try:
+        with get_db() as db:
+            last_match_count = db.query(func.count(Match.id)).scalar()
+        print(f"📊 Total de partidas: {last_match_count}")
+    except:
+        last_match_count = 0
+    
+    # Iniciar monitor de mudanças
+    asyncio.create_task(monitor_database_changes())
+    print("✅ Monitor de mudanças iniciado")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Executado ao desligar a API"""
     global scraper_process
+    
+    # Fechar todas as conexões WebSocket
+    for websocket in list(active_websockets):
+        try:
+            await websocket.close()
+        except:
+            pass
+    active_websockets.clear()
     
     # Parar scraper se estiver rodando
     if scraper_process and scraper_process.poll() is None:

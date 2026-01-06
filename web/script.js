@@ -2,6 +2,7 @@
 // Configuração da API
 // ============================================================================
 const API_URL = 'http://localhost:8000';
+const WS_URL = 'ws://localhost:8000/ws';
 const USE_API = true; // Se false, usa JSON estático
 
 // Estado global
@@ -9,12 +10,20 @@ let allMatches = [];
 let filteredMatches = [];
 let stats = {};
 let scraperStatus = { is_running: false };
+let websocket = null;
+let wsReconnectAttempts = 0;
+const MAX_WS_RECONNECT_ATTEMPTS = 5;
 
 // Inicialização
 document.addEventListener('DOMContentLoaded', () => {
     initializeEventListeners();
     loadData();
     updateScraperStatus();
+    
+    // Conectar WebSocket se API estiver ativada
+    if (USE_API) {
+        connectWebSocket();
+    }
 });
 
 // Event Listeners
@@ -27,6 +36,232 @@ function initializeEventListeners() {
     // Controle do scraper (Fase 2)
     document.getElementById('btnStartScraper').addEventListener('click', startScraper);
     document.getElementById('btnStopScraper').addEventListener('click', stopScraper);
+    
+    // Logs (Fase 3)
+    document.getElementById('btnLogs').addEventListener('click', showLogs);
+    document.getElementById('btnRefreshLogs')?.addEventListener('click', loadLogs);
+}
+
+// ============================================================================
+// Fase 3: WebSocket Tempo Real
+// ============================================================================
+
+function connectWebSocket() {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        return; // Já conectado
+    }
+    
+    try {
+        websocket = new WebSocket(WS_URL);
+        
+        websocket.onopen = () => {
+            console.log('✅ WebSocket conectado');
+            wsReconnectAttempts = 0;
+            updateWSStatus('🟢 Conectado', 'success');
+            showToast('Conectado ao servidor em tempo real', 'success');
+        };
+        
+        websocket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+        };
+        
+        websocket.onerror = (error) => {
+            console.error('❌ Erro no WebSocket:', error);
+            updateWSStatus('🔴 Erro', 'error');
+        };
+        
+        websocket.onclose = () => {
+            console.log('⚠️ WebSocket desconectado');
+            updateWSStatus('🟡 Desconectado', 'warning');
+            
+            // Tentar reconectar
+            if (wsReconnectAttempts < MAX_WS_RECONNECT_ATTEMPTS) {
+                wsReconnectAttempts++;
+                setTimeout(() => {
+                    console.log(`🔄 Tentando reconectar (${wsReconnectAttempts}/${MAX_WS_RECONNECT_ATTEMPTS})...`);
+                    connectWebSocket();
+                }, 3000 * wsReconnectAttempts); // Backoff exponencial
+            }
+        };
+        
+        // Ping a cada 25s para manter conexão
+        setInterval(() => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send('ping');
+            }
+        }, 25000);
+        
+    } catch (error) {
+        console.error('Erro ao conectar WebSocket:', error);
+        updateWSStatus('🔴 Falha', 'error');
+    }
+}
+
+function handleWebSocketMessage(data) {
+    switch (data.type) {
+        case 'connected':
+            console.log('📡 WebSocket inicializado:', data);
+            break;
+        
+        case 'new_matches':
+            console.log(`🆕 ${data.count} novas partidas adicionadas!`);
+            showToast(
+                `🆕 ${data.count} nova${data.count > 1 ? 's' : ''} partida${data.count > 1 ? 's' : ''} adicionada${data.count > 1 ? 's' : ''}!`,
+                'info'
+            );
+            
+            // Atualizar dados automaticamente
+            loadData();
+            break;
+        
+        case 'pong':
+            console.log('🏓 Pong recebido');
+            break;
+        
+        case 'heartbeat':
+            console.log('💓 Heartbeat');
+            break;
+        
+        default:
+            console.log('📨 Mensagem WebSocket:', data);
+    }
+}
+
+function updateWSStatus(text, type = 'info') {
+    const statusEl = document.getElementById('wsStatus');
+    if (statusEl) {
+        statusEl.textContent = text;
+        
+        if (type === 'success') {
+            statusEl.style.color = '#10b981';
+        } else if (type === 'error') {
+            statusEl.style.color = '#ef4444';
+        } else if (type === 'warning') {
+            statusEl.style.color = '#f59e0b';
+        } else {
+            statusEl.style.color = '#6b7280';
+        }
+    }
+}
+
+// ============================================================================
+// Fase 3: Sistema de Notificações Toast
+// ============================================================================
+
+function showToast(message, type = 'info', duration = 5000) {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    
+    const icon = {
+        success: '✅',
+        error: '❌',
+        warning: '⚠️',
+        info: '💡'
+    }[type] || '💡';
+    
+    toast.innerHTML = `
+        <div class="toast-icon">${icon}</div>
+        <div class="toast-message">${message}</div>
+        <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+    `;
+    
+    container.appendChild(toast);
+    
+    // Animação de entrada
+    setTimeout(() => toast.classList.add('toast-show'), 10);
+    
+    // Remover automaticamente
+    setTimeout(() => {
+        toast.classList.remove('toast-show');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+// ============================================================================
+// Fase 3: Logs do Scraper
+// ============================================================================
+
+async function showLogs() {
+    document.getElementById('logsSection').style.display = 'block';
+    document.getElementById('logsSection').scrollIntoView({ behavior: 'smooth' });
+    loadLogs();
+}
+
+async function loadLogs() {
+    if (!USE_API) {
+        document.getElementById('logsContainer').innerHTML = 
+            '<div class="loading">⚠️ Ative o modo API para ver logs</div>';
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/api/logs?limit=20`);
+        
+        if (!response.ok) {
+            throw new Error(`Erro HTTP: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        displayLogs(data.logs);
+        
+    } catch (error) {
+        console.error('Erro ao carregar logs:', error);
+        document.getElementById('logsContainer').innerHTML = 
+            `<div class="loading" style="color: #ef4444;">❌ Erro ao carregar logs: ${error.message}</div>`;
+    }
+}
+
+function displayLogs(logs) {
+    const container = document.getElementById('logsContainer');
+    
+    if (!logs || logs.length === 0) {
+        container.innerHTML = '<div class="loading">Nenhum log encontrado</div>';
+        return;
+    }
+    
+    container.innerHTML = logs.map(log => {
+        const startDate = log.started_at ? new Date(log.started_at).toLocaleString('pt-BR') : 'N/A';
+        const endDate = log.finished_at ? new Date(log.finished_at).toLocaleString('pt-BR') : 'Em execução';
+        const duration = log.finished_at && log.started_at 
+            ? `${((new Date(log.finished_at) - new Date(log.started_at)) / 1000).toFixed(1)}s`
+            : '-';
+        
+        const statusClass = log.status === 'success' ? 'success' : 
+                           log.status === 'error' ? 'error' : 'warning';
+        
+        const statusIcon = log.status === 'success' ? '✅' : 
+                          log.status === 'error' ? '❌' : '⚠️';
+        
+        return `
+            <div class="log-item log-${statusClass}">
+                <div class="log-header">
+                    <div class="log-status">${statusIcon} ${log.status.toUpperCase()}</div>
+                    <div class="log-date">${startDate}</div>
+                </div>
+                <div class="log-details">
+                    <div class="log-stat">
+                        <strong>Encontradas:</strong> ${log.matches_found || 0}
+                    </div>
+                    <div class="log-stat">
+                        <strong>Novas:</strong> ${log.matches_new || 0}
+                    </div>
+                    <div class="log-stat">
+                        <strong>Atualizadas:</strong> ${log.matches_updated || 0}
+                    </div>
+                    <div class="log-stat">
+                        <strong>Duração:</strong> ${duration}
+                    </div>
+                </div>
+                ${log.error_message ? `
+                    <div class="log-error">
+                        <strong>Erro:</strong> ${log.error_message}
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }).join('');
 }
 
 // Carregar dados do banco

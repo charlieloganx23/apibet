@@ -12,7 +12,7 @@
         <header class="header">
             <div class="header-content">
                 <h1>🎯 ApiBet Dashboard</h1>
-                <p class="subtitle">Sistema de Predições de Futebol Virtual - Fase 2 API</p>
+                <p class="subtitle">Sistema de Predições de Futebol Virtual - Fase 3 Tempo Real</p>
             </div>
             <div class="header-actions">
                 <button id="btnRefresh" class="btn btn-primary">
@@ -23,6 +23,9 @@
                 </button>
                 <button id="btnStopScraper" class="btn btn-outline" disabled>
                     <span class="icon">⏸️</span> Parar Scraper
+                </button>
+                <button id="btnLogs" class="btn btn-outline">
+                    <span class="icon">📋</span> Logs
                 </button>
                 <button id="btnAnalyze" class="btn btn-outline">
                     <span class="icon">📊</span> Análise
@@ -35,6 +38,10 @@
             <div class="status-item">
                 <span class="status-label">Status:</span>
                 <span class="status-value" id="statusValue">Carregando...</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">WebSocket:</span>
+                <span class="status-value" id="wsStatus">🔴 Desconectado</span>
             </div>
             <div class="status-item">
                 <span class="status-label">Última atualização:</span>
@@ -158,6 +165,24 @@
             </div>
         </div>
 
+        <!-- Logs Section -->
+        <div class="section" id="logsSection" style="display: none;">
+            <h2 class="section-title">📋 Logs do Scraper</h2>
+            <div class="table-controls">
+                <div class="table-info">
+                    <span>Últimas 20 execuções</span>
+                </div>
+                <div class="table-actions">
+                    <button id="btnRefreshLogs" class="btn btn-small">
+                        <span class="icon">🔄</span> Atualizar
+                    </button>
+                </div>
+            </div>
+            <div class="logs-container" id="logsContainer">
+                <div class="loading">Carregando logs...</div>
+            </div>
+        </div>
+
         <!-- Analysis Section -->
         <div class="section" id="analysisSection" style="display: none;">
             <h2 class="section-title">📈 Análise de Padrões</h2>
@@ -166,6 +191,9 @@
             </div>
         </div>
     </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toastContainer" class="toast-container"></div>
 
     <!-- Loading Overlay -->
     <div id="loadingOverlay" class="loading-overlay" style="display: none;">
