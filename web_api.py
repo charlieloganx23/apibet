@@ -150,33 +150,70 @@ async def get_matches(
             
             # Adicionar campo 'status' dinamicamente considerando horário
             from datetime import datetime, timedelta
-            now = datetime.now()
-            current_time_minutes = now.hour * 60 + now.minute
+            # IMPORTANTE: Adicionar +4h para sincronizar com horário do site Bet365
+            # Se no PC é 12:22, no site são 16:22
+            site_time = datetime.now() + timedelta(hours=4)
             
             result = []
             for match in matches:
                 try:
-                    # Determinar status real
-                    if match.result is not None:
-                        # Tem resultado confirmado
+                    # Determinar status real baseado no horário do site
+                    if match.goals_home is not None and match.goals_away is not None:
+                        # Tem resultado confirmado (gols definidos)
                         match_status = "finished"
-                    elif match.match_date:
-                        # Usar match_date se disponível
-                        time_diff = now - match.match_date
-                        if time_diff > timedelta(hours=2):
-                            match_status = "expired"  # Passou do horário, sem resultado
-                        elif time_diff > timedelta(minutes=-30):
-                            match_status = "live"  # Próximo ou em andamento
-                        else:
-                            match_status = "scheduled"
+                    elif match.scheduled_time:
+                        # Usar scheduled_time (formato "HH:MM")
+                        try:
+                            time_parts = match.scheduled_time.split(':')
+                            match_hour = int(time_parts[0])
+                            match_minute = int(time_parts[1])
+                            
+                            # Cria datetime da partida no horário do site
+                            match_datetime = site_time.replace(
+                                hour=match_hour, 
+                                minute=match_minute, 
+                                second=0, 
+                                microsecond=0
+                            )
+                            
+                            # Se o horário da partida já passou hoje, pode ser amanhã
+                            if match_datetime < site_time:
+                                # Verifica se a diferença é maior que 12 horas (provavelmente é amanhã)
+                                time_diff = (site_time - match_datetime).total_seconds() / 60
+                                if time_diff > 720:  # 12 horas
+                                    match_datetime = match_datetime + timedelta(days=1)
+                            
+                            # Calcula diferença em minutos
+                            time_diff_minutes = (match_datetime - site_time).total_seconds() / 60
+                            
+                            # Define status
+                            if time_diff_minutes > 120:  # Mais de 2h no futuro
+                                match_status = "scheduled"
+                            elif time_diff_minutes > -30:  # Entre 2h antes e 30min depois
+                                match_status = "live"
+                            else:  # Mais de 30min atrás
+                                match_status = "expired"
+                        except:
+                            # Fallback para hour/minute se scheduled_time não funcionar
+                            match_time_minutes = match.hour * 60 + match.minute
+                            current_time_minutes = site_time.hour * 60 + site_time.minute
+                            time_diff_minutes = current_time_minutes - match_time_minutes
+                            
+                            if time_diff_minutes > 120:
+                                match_status = "expired"
+                            elif time_diff_minutes > -30:
+                                match_status = "live"
+                            else:
+                                match_status = "scheduled"
                     else:
-                        # Usar hora/minuto
+                        # Fallback final: usar hour/minute
                         match_time_minutes = match.hour * 60 + match.minute
+                        current_time_minutes = site_time.hour * 60 + site_time.minute
                         time_diff_minutes = current_time_minutes - match_time_minutes
                         
-                        if time_diff_minutes > 120:  # Passou 2h
+                        if time_diff_minutes > 120:
                             match_status = "expired"
-                        elif time_diff_minutes > -30:  # Começa em menos de 30min ou já começou
+                        elif time_diff_minutes > -30:
                             match_status = "live"
                         else:
                             match_status = "scheduled"
@@ -753,8 +790,8 @@ def update_match_status_by_time():
         with get_db() as db:
             from datetime import datetime, timedelta
             
-            # Pegar data/hora atual
-            now = datetime.now()
+            # Pegar data/hora atual do SITE (+4h)
+            now = datetime.now() + timedelta(hours=4)
             current_hour = now.hour
             current_minute = now.minute
             current_time_minutes = current_hour * 60 + current_minute

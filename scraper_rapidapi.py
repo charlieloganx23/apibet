@@ -4,7 +4,7 @@ Sem CAPTCHA, sem Selenium, dados estruturados em JSON!
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
@@ -127,7 +127,8 @@ class RapidAPIScraper:
             
             # Metadados
             "status": "scheduled",
-            "scraped_at": datetime.utcnow()
+            # Usa horário do site (local + 4h)
+            "scraped_at": datetime.now() + timedelta(hours=4)
         }
     
     def scrape_league(self, league: str, db: Session) -> Tuple[int, int, int]:

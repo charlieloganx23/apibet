@@ -5,7 +5,7 @@ Atualiza partidas no banco com placares finais para treinar ML
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 

@@ -13,10 +13,13 @@ Session = sessionmaker(bind=engine)
 session = Session()
 
 print("🔄 Sincronizando status das partidas...")
-print(f"⏰ Horário atual: {datetime.now().strftime('%H:%M')}")
+local_time = datetime.now()
+site_time = local_time + timedelta(hours=4)  # +4h para horário do site
+print(f"⏰ Horário local: {local_time.strftime('%H:%M')}")
+print(f"🌐 Horário do site: {site_time.strftime('%H:%M')}")
 
-# Pegar hora atual
-now = datetime.now()
+# Pegar hora atual DO SITE
+now = site_time
 current_time_minutes = now.hour * 60 + now.minute
 
 # Buscar partidas sem resultado
@@ -49,7 +52,9 @@ print(f"⏰ Partidas com horário vencido (>2h): {len(expired_matches)}")
 if expired_matches:
     print("\n📋 Partidas que deveriam ter resultado:")
     for match in expired_matches[:10]:  # Mostrar primeiras 10
-        print(f"   • {match.hour:02d}:{match.minute:02d} - {match.league} - {match.team_home} vs {match.team_away}")
+        hour = int(match.hour) if match.hour else 0
+        minute = int(match.minute) if match.minute else 0
+        print(f"   • {hour:02d}:{minute:02d} - {match.league} - {match.team_home} vs {match.team_away}")
     
     # Perguntar se quer gerar resultados simulados
     print(f"\n💡 Encontradas {len(expired_matches)} partidas com horário passado")
