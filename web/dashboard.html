@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 ApiBet - Dashboard de Predições</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🎯 ApiBet Dashboard</h1>
+                <p class="subtitle">Sistema de Predições de Futebol Virtual</p>
+            </div>
+            <div class="header-actions">
+                <button id="btnRefresh" class="btn btn-primary">
+                    <span class="icon">🔄</span> Atualizar Dados
+                </button>
+                <button id="btnAnalyze" class="btn btn-secondary">
+                    <span class="icon">📊</span> Análise de Padrões
+                </button>
+            </div>
+        </header>
+
+        <!-- Status Bar -->
+        <div class="status-bar" id="statusBar">
+            <div class="status-item">
+                <span class="status-label">Status:</span>
+                <span class="status-value" id="statusValue">Carregando...</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Última atualização:</span>
+                <span class="status-value" id="lastUpdate">-</span>
+            </div>
+        </div>
+
+        <!-- Statistics Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">⚽</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="totalMatches">-</div>
+                    <div class="stat-label">Total de Partidas</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="finishedMatches">-</div>
+                    <div class="stat-label">Finalizadas</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📅</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="scheduledMatches">-</div>
+                    <div class="stat-label">Agendadas</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🎯</div>
+                <div class="stat-content">
+                    <div class="stat-value" id="accuracy">58.3%</div>
+                    <div class="stat-label">Acurácia Atual</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Leagues Distribution -->
+        <div class="section">
+            <h2 class="section-title">📊 Distribuição por Liga</h2>
+            <div class="leagues-grid" id="leaguesGrid">
+                <!-- Será preenchido via JavaScript -->
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="section">
+            <h2 class="section-title">🔍 Filtros</h2>
+            <div class="filters">
+                <div class="filter-group">
+                    <label for="filterLeague">Liga:</label>
+                    <select id="filterLeague" class="filter-select">
+                        <option value="all">Todas</option>
+                        <option value="euro">Euro Cup</option>
+                        <option value="express">Express</option>
+                        <option value="copa">Copa</option>
+                        <option value="super">Super</option>
+                        <option value="premier">Premier</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="filterStatus">Status:</label>
+                    <select id="filterStatus" class="filter-select">
+                        <option value="all">Todos</option>
+                        <option value="scheduled">Agendadas</option>
+                        <option value="finished">Finalizadas</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="searchTeam">Buscar Time:</label>
+                    <input type="text" id="searchTeam" class="filter-input" placeholder="Nome do time...">
+                </div>
+                <button id="btnApplyFilter" class="btn btn-small">Aplicar Filtros</button>
+            </div>
+        </div>
+
+        <!-- Matches Table -->
+        <div class="section">
+            <h2 class="section-title">📋 Próximas Partidas</h2>
+            <div class="table-controls">
+                <div class="table-info">
+                    <span id="tableCount">Mostrando 0 partidas</span>
+                </div>
+                <div class="table-actions">
+                    <button id="btnExport" class="btn btn-small btn-outline">
+                        <span class="icon">📥</span> Exportar CSV
+                    </button>
+                </div>
+            </div>
+            <div class="table-container">
+                <table class="matches-table" id="matchesTable">
+                    <thead>
+                        <tr>
+                            <th>Horário</th>
+                            <th>Liga</th>
+                            <th>Partida</th>
+                            <th>Odds Casa</th>
+                            <th>Odds Empate</th>
+                            <th>Odds Fora</th>
+                            <th>Under 2.5</th>
+                            <th>Over 2.5</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="matchesTableBody">
+                        <tr>
+                            <td colspan="9" class="loading">Carregando dados...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Predictions Section -->
+        <div class="section" id="predictionsSection" style="display: none;">
+            <h2 class="section-title">🔮 Predição Detalhada</h2>
+            <div id="predictionContent" class="prediction-content">
+                <!-- Será preenchido ao clicar em "Prever" -->
+            </div>
+        </div>
+
+        <!-- Analysis Section -->
+        <div class="section" id="analysisSection" style="display: none;">
+            <h2 class="section-title">📈 Análise de Padrões</h2>
+            <div id="analysisContent" class="analysis-content">
+                <!-- Será preenchido ao clicar em "Análise de Padrões" -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processando...</p>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
